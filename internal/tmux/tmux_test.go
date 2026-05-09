@@ -42,6 +42,31 @@ func TestFake_LifecycleHappyPath(t *testing.T) {
 	}
 }
 
+func TestFake_CapturePane(t *testing.T) {
+	f := NewFake()
+	if _, err := f.CapturePane("missing", 0); err == nil {
+		t.Error("CapturePane on missing session: nil error, want error")
+	}
+	if err := f.NewSession(NewSessionOpts{Name: "wf", Cmd: "claude"}); err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	got, err := f.CapturePane("wf", 0)
+	if err != nil {
+		t.Fatalf("CapturePane: %v", err)
+	}
+	if got != "" {
+		t.Errorf("CapturePane default: got %q, want empty", got)
+	}
+	f.SetPaneOutput("wf", "hello\nworld")
+	got, err = f.CapturePane("wf", 0)
+	if err != nil {
+		t.Fatalf("CapturePane after SetPaneOutput: %v", err)
+	}
+	if got != "hello\nworld" {
+		t.Errorf("CapturePane after SetPaneOutput: got %q, want %q", got, "hello\nworld")
+	}
+}
+
 func TestFake_DoubleCreate_Errors(t *testing.T) {
 	f := NewFake()
 	if err := f.NewSession(NewSessionOpts{Name: "x"}); err != nil {

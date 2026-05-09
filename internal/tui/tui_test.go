@@ -227,6 +227,122 @@ func TestCreateForm_SubmitWithoutName_ShowsError(t *testing.T) {
 	}
 }
 
+// withSize returns m updated to have the given terminal dimensions.
+func withSize(m Model, w, h int) Model {
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
+	return updated.(Model)
+}
+
+func TestPreview_HiddenBelowThreshold(t *testing.T) {
+	m, _, _ := newTestModel(t)
+	m = withSize(m, 120, 40)
+	updated, _ := m.Update(workflowsLoadedMsg{items: []DisplayItem{
+		{Workflow: workflow.Workflow{Name: "alpha", TmuxSession: "arteta-alpha"}},
+	}})
+	m = updated.(Model)
+	// Prime preview content; it should not appear because width < 140.
+	updated, _ = m.Update(previewMsg{name: "alpha", content: "secret-payload"})
+	m = updated.(Model)
+	view := m.View()
+	if strings.Contains(view, "secret-payload") {
+		t.Errorf("preview rendered below threshold:\n%s", view)
+	}
+}
+
+func TestPreview_RendersForSelected(t *testing.T) {
+	m, _, _ := newTestModel(t)
+	m = withSize(m, 160, 40)
+	updated, _ := m.Update(workflowsLoadedMsg{items: []DisplayItem{
+		{Workflow: workflow.Workflow{Name: "alpha", TmuxSession: "arteta-alpha"}},
+		{Workflow: workflow.Workflow{Name: "beta", TmuxSession: "arteta-beta"}},
+	}})
+	m = updated.(Model)
+	updated, _ = m.Update(previewMsg{name: "alpha", content: "alpha-line-1\nalpha-line-2"})
+	m = updated.(Model)
+	updated, _ = m.Update(previewMsg{name: "beta", content: "beta-only-content"})
+	m = updated.(Model)
+
+	view := m.View()
+	if !strings.Contains(view, "alpha-line-1") || !strings.Contains(view, "alpha-line-2") {
+		t.Errorf("expected alpha preview lines in view; got:\n%s", view)
+	}
+	if strings.Contains(view, "beta-only-content") {
+		t.Errorf("non-selected beta content leaked into view:\n%s", view)
+	}
+}
+
+func TestPreview_DormantPlaceholder(t *testing.T) {
+	m, _, _ := newTestModel(t)
+	m = withSize(m, 160, 40)
+	updated, _ := m.Update(workflowsLoadedMsg{items: []DisplayItem{
+		{Workflow: workflow.Workflow{Name: "ghost", TmuxSession: "arteta-ghost"}, Dormant: true},
+	}})
+	m = updated.(Model)
+	view := m.View()
+	if !strings.Contains(view, "dormant") {
+		t.Errorf("expected dormant placeholder in preview; got:\n%s", view)
+	}
+}
+
+func TestPreview_CursorMoveTriggersCapture(t *testing.T) {
+	m, svc, _ := newTestModel(t)
+	m = withSize(m, 160, 40)
+	// Seed the fake tmux with two sessions so capture-pane succeeds for both.
+	fake := svc.Tmux.(*tmux.Fake)
+	if err := fake.NewSession(tmux.NewSessionOpts{Name: "arteta-alpha"}); err != nil {
+		t.Fatalf("fake NewSession alpha: %v", err)
+	}
+	if err := fake.NewSession(tmux.NewSessionOpts{Name: "arteta-beta"}); err != nil {
+		t.Fatalf("fake NewSession beta: %v", err)
+	}
+	fake.SetPaneOutput("arteta-beta", "from-beta-pane")
+
+	updated, _ := m.Update(workflowsLoadedMsg{items: []DisplayItem{
+		{Workflow: workflow.Workflow{Name: "alpha", TmuxSession: "arteta-alpha"}},
+		{Workflow: workflow.Workflow{Name: "beta", TmuxSession: "arteta-beta"}},
+	}})
+	m = updated.(Model)
+
+	// Move cursor to beta — should return a capture cmd.
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("cursor move did not return capture cmd")
+	}
+	msg := cmd()
+	pm, ok := msg.(previewMsg)
+	if !ok {
+		t.Fatalf("expected previewMsg, got %T", msg)
+	}
+	if pm.name != "beta" || pm.content != "from-beta-pane" {
+		t.Errorf("previewMsg mismatch: %+v", pm)
+	}
+}
+
+func TestPreview_KeepsLastGoodOnError(t *testing.T) {
+	m, _, _ := newTestModel(t)
+	m = withSize(m, 160, 40)
+	updated, _ := m.Update(workflowsLoadedMsg{items: []DisplayItem{
+		{Workflow: workflow.Workflow{Name: "alpha", TmuxSession: "arteta-alpha"}},
+	}})
+	m = updated.(Model)
+	// First success — primes last-good.
+	updated, _ = m.Update(previewMsg{name: "alpha", content: "good-frame"})
+	m = updated.(Model)
+	// Now an error — the last-good frame should still render.
+	updated, _ = m.Update(previewMsg{name: "alpha", err: tmuxErr("boom")})
+	m = updated.(Model)
+	view := m.View()
+	if !strings.Contains(view, "good-frame") {
+		t.Errorf("last-good frame disappeared after error:\n%s", view)
+	}
+}
+
+// tmuxErr is a small typed error used in preview-error tests.
+type tmuxErr string
+
+func (e tmuxErr) Error() string { return string(e) }
+
 func TestCreateForm_Submit_Succeeds(t *testing.T) {
 	f := newCreateForm("/cwd")
 	f.NameInput.SetValue("good-name")

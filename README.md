@@ -7,6 +7,8 @@ socket, its own iTerm tab, and a row on the homepage that surfaces what
 Claude is doing right now — running, awaiting input, or idle. Status is
 driven by Claude Code hooks, so the homepage updates without polling.
 
+![Arteta homepage with side-pane preview](docs/demo.png)
+
 See [SPEC.md](SPEC.md) for the product vision and [DECISIONS.md](DECISIONS.md)
 for the design rationale behind the MVP.
 

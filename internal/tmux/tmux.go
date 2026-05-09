@@ -55,6 +55,9 @@ type Client interface {
 	// PaneCommands returns the current foreground command for each pane in the
 	// session, ordered by pane index.
 	PaneCommands(session string) ([]string, error)
+	// CapturePane returns the rendered viewport of a pane with SGR escapes
+	// preserved (no cursor-control escapes). Used by the homepage preview.
+	CapturePane(session string, pane int) (string, error)
 }
 
 // realClient shells out to `tmux -L <socket>`.
@@ -192,4 +195,13 @@ func (c *realClient) PaneCommands(session string) ([]string, error) {
 		}
 	}
 	return cmds, nil
+}
+
+func (c *realClient) CapturePane(session string, pane int) (string, error) {
+	target := fmt.Sprintf("%s.%d", session, pane)
+	out, err := c.run(c.base("capture-pane", "-ep", "-t", target)...)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }

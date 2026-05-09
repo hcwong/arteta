@@ -2,6 +2,7 @@ package tui
 
 import (
 	"path/filepath"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/fsnotify/fsnotify"
@@ -21,6 +22,12 @@ type errMsg struct{ err error }
 type createDoneMsg struct{ name string }
 type closeDoneMsg struct{ name string }
 type reviveDoneMsg struct{ name string }
+type previewMsg struct {
+	name    string
+	content string
+	err     error
+}
+type previewTickMsg struct{}
 
 func (e errMsg) Error() string { return e.err.Error() }
 
@@ -127,6 +134,24 @@ func reviveCmd(svc *service.Service, name string) tea.Cmd {
 		}
 		return reviveDoneMsg{name: name}
 	}
+}
+
+// capturePaneCmd snapshots pane 0 of a workflow's tmux session. Errors
+// ride on previewMsg.err so the model can decide whether to surface them
+// (instead of polluting the persistent m.err channel on every transient
+// race with KillSession).
+func capturePaneCmd(svc *service.Service, name, sessionName string) tea.Cmd {
+	return func() tea.Msg {
+		out, err := svc.Tmux.CapturePane(sessionName, 0)
+		return previewMsg{name: name, content: out, err: err}
+	}
+}
+
+// previewTickCmd schedules the next preview refresh tick.
+func previewTickCmd() tea.Cmd {
+	return tea.Tick(time.Second, func(time.Time) tea.Msg {
+		return previewTickMsg{}
+	})
 }
 
 // DisplayItem is the per-row data the homepage renders.

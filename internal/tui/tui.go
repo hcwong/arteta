@@ -30,23 +30,33 @@ type Model struct {
 	Service    *service.Service
 	DefaultCwd string
 
-	items   []DisplayItem
-	cursor  int
-	mode    Mode
-	create  CreateForm
-	err     error
-	width   int
-	height  int
-	events  <-chan fsnotify.Event
-	pending string
+	items       []DisplayItem
+	cursor      int
+	mode        Mode
+	create      CreateForm
+	err         error
+	width       int
+	height      int
+	events      <-chan fsnotify.Event
+	pending     string
+	preview     map[string]string // last-good capture per workflow name
+	previewErrs map[string]int    // consecutive capture failures per name
 }
+
+// previewErrThreshold is how many consecutive capture failures we tolerate
+// before surfacing the error in the persistent footer. Most failures are
+// transient (race with KillSession, brief tmux server hiccup) and the
+// last-good frame keeps the UI usable.
+const previewErrThreshold = 5
 
 func New(s *store.Store, svc *service.Service, defaultCwd string) Model {
 	return Model{
-		Store:      s,
-		Service:    svc,
-		DefaultCwd: defaultCwd,
-		mode:       ModeList,
+		Store:       s,
+		Service:     svc,
+		DefaultCwd:  defaultCwd,
+		mode:        ModeList,
+		preview:     map[string]string{},
+		previewErrs: map[string]int{},
 	}
 }
 
@@ -54,6 +64,7 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		loadWorkflowsCmd(m.Store, m.Service),
 		startWatchCmd(m.Store.SessionsDir()),
+		previewTickCmd(),
 	)
 }
 
@@ -92,6 +103,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case reviveDoneMsg:
 		return m, loadWorkflowsCmd(m.Store, m.Service)
 
+	case previewTickMsg:
+		return m, tea.Batch(m.captureSelectedCmd(), previewTickCmd())
+
+	case previewMsg:
+		if msg.err != nil {
+			m.previewErrs[msg.name]++
+			if m.previewErrs[msg.name] >= previewErrThreshold && m.err == nil {
+				m.err = fmt.Errorf("preview capture for %q: %w", msg.name, msg.err)
+			}
+			return m, nil
+		}
+		m.preview[msg.name] = msg.content
+		m.previewErrs[msg.name] = 0
+		return m, nil
+
 	case errMsg:
 		m.err = msg.err
 		return m, nil
@@ -117,6 +143,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	prevCursor := m.cursor
 	switch msg.String() {
 	case "ctrl+c", "q":
 		return m, tea.Quit
@@ -152,7 +179,25 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = ModeConfirmDelete
 		}
 	}
+	if m.cursor != prevCursor {
+		return m, m.captureSelectedCmd()
+	}
 	return m, nil
+}
+
+// captureSelectedCmd dispatches a CapturePane for the currently selected
+// workflow, or nil if there's nothing capturable (empty list, dormant row,
+// or workflow has no tmux session yet).
+func (m Model) captureSelectedCmd() tea.Cmd {
+	it := m.selected()
+	if it == nil || it.Dormant {
+		return nil
+	}
+	session := it.Workflow.TmuxSession
+	if session == "" {
+		return nil
+	}
+	return capturePaneCmd(m.Service, it.Workflow.Name, session)
 }
 
 func (m Model) updateCreate(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -206,6 +251,24 @@ func (m Model) View() string {
 	return m.viewList()
 }
 
+// previewWidthThreshold is the minimum terminal width at which we render
+// the side-pane preview. Below this, the homepage falls back to a single
+// centered column. Picked so list (~60 cols) + preview (~70 cols readable)
+// + gutter fit comfortably.
+const previewWidthThreshold = 140
+
+// listColWidth is the fixed width of the workflow list when the side pane
+// is showing. Rows never need more than this; flexing it would only steal
+// space from the preview.
+const listColWidth = 60
+
+const topPad = 2
+
+// sidePad reserves horizontal whitespace on each side of the homepage so
+// content doesn't crash into the terminal edge. Applies in two-column mode
+// and caps the preview width.
+const sidePad = 4
+
 func (m Model) viewList() string {
 	body := m.renderListBody()
 	footer := m.renderListFooter()
@@ -216,7 +279,13 @@ func (m Model) viewList() string {
 		return body + "\n\n" + footer
 	}
 
-	const topPad = 2
+	if m.width < previewWidthThreshold {
+		return m.viewListSingleCol(body, footer)
+	}
+	return m.viewListTwoCol(body, footer)
+}
+
+func (m Model) viewListSingleCol(body, footer string) string {
 	contentW := contentWidth(m.width)
 	bodyBox := lipgloss.NewStyle().Width(contentW).Render(body)
 	footerBox := lipgloss.NewStyle().Width(contentW).Render(footer)
@@ -230,6 +299,79 @@ func (m Model) viewList() string {
 	}
 
 	return strings.Repeat("\n", topPad) + bodyCentered + strings.Repeat("\n", spacer) + footerCentered
+}
+
+func (m Model) viewListTwoCol(body, footer string) string {
+	footerBox := lipgloss.NewStyle().Width(m.width).Render(footer)
+	footerCentered := lipgloss.PlaceHorizontal(m.width, lipgloss.Center, footerBox)
+
+	availableH := m.height - topPad - lipgloss.Height(footerCentered) - 1 // 1 for spacer
+	if availableH < 5 {
+		availableH = 5
+	}
+
+	listBox := lipgloss.NewStyle().Width(listColWidth).Render(body)
+	previewW := m.width - listColWidth - 2 - 2*sidePad // 2 for gutter, sidePad on each edge
+	previewBox := m.renderPreview(previewW, availableH)
+
+	joined := lipgloss.JoinHorizontal(lipgloss.Top, listBox, "  ", previewBox)
+	joinedCentered := lipgloss.PlaceHorizontal(m.width, lipgloss.Center, joined)
+
+	spacer := m.height - topPad - lipgloss.Height(joinedCentered) - lipgloss.Height(footerCentered)
+	if spacer < 1 {
+		spacer = 1
+	}
+
+	return strings.Repeat("\n", topPad) + joinedCentered + strings.Repeat("\n", spacer) + footerCentered
+}
+
+// renderPreview produces the bordered side-pane content for the currently
+// selected workflow, sized to fit (width × height) including the border.
+func (m Model) renderPreview(width, height int) string {
+	style := previewStyle.Width(width).Height(height)
+	innerW := width - 4  // border (2) + horizontal padding (2)
+	innerH := height - 2 // border top/bottom
+
+	it := m.selected()
+	if it == nil {
+		return style.Render(centerText(dimStyle.Render("(no workflow selected)"), innerW, innerH))
+	}
+	if it.Dormant {
+		msg := dormantStyle.Render("dormant — press ⏎ to revive")
+		return style.Render(centerText(msg, innerW, innerH))
+	}
+
+	_, stateText := stateBadge(*it)
+	title := titleStyle.Render(it.Workflow.Name) + " " + stateText
+	body := m.preview[it.Workflow.Name]
+	if body == "" {
+		body = dimStyle.Render("(loading…)")
+	}
+	body = clipPreviewBody(body, innerW, innerH-2) // -2 for title + blank line
+
+	return style.Render(title + "\n\n" + body)
+}
+
+// clipPreviewBody trims a captured pane string to the last `maxRows` rows
+// and ANSI-truncates each row to `maxCols` printable runes.
+func clipPreviewBody(s string, maxCols, maxRows int) string {
+	if maxRows <= 0 || maxCols <= 0 {
+		return ""
+	}
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > maxRows {
+		lines = lines[len(lines)-maxRows:]
+	}
+	for i, ln := range lines {
+		lines[i] = truncateANSI(ln, maxCols)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// centerText vertically and horizontally pads a (potentially multi-line)
+// string into a width×height box.
+func centerText(s string, width, height int) string {
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, s)
 }
 
 func (m Model) renderListBody() string {

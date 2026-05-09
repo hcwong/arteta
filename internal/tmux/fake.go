@@ -11,6 +11,9 @@ type Fake struct {
 	mu       sync.Mutex
 	sessions map[string]*FakeSession
 	Calls    []string
+	// paneOutput holds canned capture-pane output keyed by session name.
+	// Tests set it via SetPaneOutput.
+	paneOutput map[string]string
 }
 
 // FakeSession tracks the state of a session in the Fake.
@@ -30,7 +33,10 @@ type FakePane struct {
 }
 
 func NewFake() *Fake {
-	return &Fake{sessions: map[string]*FakeSession{}}
+	return &Fake{
+		sessions:   map[string]*FakeSession{},
+		paneOutput: map[string]string{},
+	}
 }
 
 func (f *Fake) Sessions() map[string]*FakeSession {
@@ -137,6 +143,24 @@ func (f *Fake) PaneCommands(session string) ([]string, error) {
 		out = append(out, p.Current)
 	}
 	return out, nil
+}
+
+func (f *Fake) CapturePane(session string, pane int) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Calls = append(f.Calls, fmt.Sprintf("CapturePane:%s.%d", session, pane))
+	if _, ok := f.sessions[session]; !ok {
+		return "", fmt.Errorf("session %q not found", session)
+	}
+	return f.paneOutput[session], nil
+}
+
+// SetPaneOutput stores canned capture-pane output for a session. Used in
+// tests to simulate live tmux pane content.
+func (f *Fake) SetPaneOutput(session, content string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.paneOutput[session] = content
 }
 
 // SetPaneCurrent overrides the current command of a pane (used in tests

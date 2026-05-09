@@ -14,6 +14,10 @@ var (
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("#7D56F4")).
 			Padding(1, 2)
+	previewStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("240")).
+			Padding(0, 1)
 	stateRunning   = lipgloss.NewStyle().Foreground(lipgloss.Color("#F1FA8C")) // yellow
 	stateAwaiting  = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Bold(true)
 	stateIdle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")) // green
