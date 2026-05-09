@@ -25,7 +25,7 @@ func TestOpenTabScript_EmbedsCommandAndTitle(t *testing.T) {
 	if !strings.Contains(s, `tmux -L arteta attach -t arteta-auth-refactor`) {
 		t.Error("openTabScript missing command")
 	}
-	if !strings.Contains(s, `set name to "auth-refactor"`) {
+	if !strings.Contains(s, `set name of targetSession to "auth-refactor"`) {
 		t.Error("openTabScript missing title set")
 	}
 	if !strings.Contains(s, `tell application "iTerm"`) {

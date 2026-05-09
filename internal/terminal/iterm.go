@@ -67,42 +67,49 @@ func (i *ITerm) TabExists(h TabHandle) (bool, error) {
 // makes the templates straightforward to test without iTerm running.
 
 // openTabScript returns AppleScript that creates a new iTerm window or tab,
-// runs the given command, and prints "<windowID>\t<tabID>" to stdout so the
-// Go side can capture the handle.
+// runs the given command, and prints "<windowID>\t<sessionID>" to stdout so
+// the Go side can capture the handle. We use iTerm's session unique id (a
+// UUID) rather than tab id because `id of tab` is flaky across iTerm builds
+// (returns -1728 "object not found" on some macOS/iTerm combos).
 func openTabScript(opts OpenOpts) string {
 	cmd := escapeAS(opts.Command)
 	title := escapeAS(opts.Title)
-	// Always create a new tab in the current window if one exists; otherwise
-	// create a new window. This matches the spec's "open Iterm tab" model.
 	return `tell application "iTerm"
 	activate
 	if (count of windows) is 0 then
 		set newWindow to (create window with default profile command "` + cmd + `")
-		set targetTab to current tab of newWindow
 		set windowID to id of newWindow
+		tell newWindow
+			set targetSession to current session of current tab
+			set sessionID to unique id of targetSession
+			try
+				set name of targetSession to "` + title + `"
+			end try
+		end tell
 	else
 		tell current window
-			set targetTab to (create tab with default profile command "` + cmd + `")
+			set newTab to (create tab with default profile command "` + cmd + `")
+			set targetSession to current session of newTab
+			set sessionID to unique id of targetSession
+			try
+				set name of targetSession to "` + title + `"
+			end try
 		end tell
 		set windowID to id of current window
 	end if
-	tell targetTab
-		set name to "` + title + `"
-		set tabID to id of it
-	end tell
-	return (windowID as string) & "	" & (tabID as string)
+	return (windowID as string) & "	" & sessionID
 end tell`
 }
 
 func focusTabScript(h TabHandle) string {
 	w := escapeAS(h.WindowID)
-	tab := escapeAS(h.TabID)
+	sid := escapeAS(h.TabID)
 	return `tell application "iTerm"
 	activate
 	tell window id ` + w + `
 		select
 		repeat with t in tabs
-			if (id of t as string) is "` + tab + `" then
+			if (unique id of current session of t) is "` + sid + `" then
 				tell t to select
 				exit repeat
 			end if
@@ -113,11 +120,11 @@ end tell`
 
 func closeTabScript(h TabHandle) string {
 	w := escapeAS(h.WindowID)
-	tab := escapeAS(h.TabID)
+	sid := escapeAS(h.TabID)
 	return `tell application "iTerm"
 	tell window id ` + w + `
 		repeat with t in tabs
-			if (id of t as string) is "` + tab + `" then
+			if (unique id of current session of t) is "` + sid + `" then
 				close t
 				exit repeat
 			end if
@@ -128,12 +135,12 @@ end tell`
 
 func tabExistsScript(h TabHandle) string {
 	w := escapeAS(h.WindowID)
-	tab := escapeAS(h.TabID)
+	sid := escapeAS(h.TabID)
 	return `tell application "iTerm"
 	try
 		tell window id ` + w + `
 			repeat with t in tabs
-				if (id of t as string) is "` + tab + `" then
+				if (unique id of current session of t) is "` + sid + `" then
 					return "true"
 				end if
 			end repeat

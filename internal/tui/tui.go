@@ -207,6 +207,32 @@ func (m Model) View() string {
 }
 
 func (m Model) viewList() string {
+	body := m.renderListBody()
+	footer := m.renderListFooter()
+
+	// No size yet (e.g. tests or first frame): render plainly so substring
+	// assertions still work and the user gets *something* on screen.
+	if m.width == 0 || m.height == 0 {
+		return body + "\n\n" + footer
+	}
+
+	const topPad = 2
+	contentW := contentWidth(m.width)
+	bodyBox := lipgloss.NewStyle().Width(contentW).Render(body)
+	footerBox := lipgloss.NewStyle().Width(contentW).Render(footer)
+
+	bodyCentered := lipgloss.PlaceHorizontal(m.width, lipgloss.Center, bodyBox)
+	footerCentered := lipgloss.PlaceHorizontal(m.width, lipgloss.Center, footerBox)
+
+	spacer := m.height - topPad - lipgloss.Height(bodyCentered) - lipgloss.Height(footerCentered)
+	if spacer < 1 {
+		spacer = 1
+	}
+
+	return strings.Repeat("\n", topPad) + bodyCentered + strings.Repeat("\n", spacer) + footerCentered
+}
+
+func (m Model) renderListBody() string {
 	var b strings.Builder
 	header := titleStyle.Render(fmt.Sprintf("Arteta — %d workflow%s", len(m.items), plural(len(m.items))))
 	b.WriteString(header)
@@ -218,17 +244,36 @@ func (m Model) viewList() string {
 	}
 
 	for i, it := range m.items {
-		row := formatRow(it, i == m.cursor, m.width)
+		row := formatRow(it, i == m.cursor, contentWidth(m.width))
 		b.WriteString(row)
 		b.WriteString("\n")
 	}
-	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("j/k move  ⏎ open  n new  D close  r refresh  ? help  q quit"))
-	if m.err != nil {
-		b.WriteString("\n\n")
-		b.WriteString(errorStyle.Render("error: " + m.err.Error()))
-	}
 	return b.String()
+}
+
+func (m Model) renderListFooter() string {
+	footer := helpStyle.Render("j/k move  ⏎ open  n new  D close  r refresh  ? help  q quit")
+	if m.err != nil {
+		footer = errorStyle.Render("error: "+m.err.Error()) + "\n" + footer
+	}
+	return footer
+}
+
+// contentWidth caps the homepage content to a comfortable line length so wide
+// terminals don't stretch rows across the screen. Keeps a small horizontal
+// margin around the content.
+func contentWidth(termW int) int {
+	if termW <= 0 {
+		return 80
+	}
+	w := termW - 4
+	if w > 120 {
+		w = 120
+	}
+	if w < 40 {
+		w = termW
+	}
+	return w
 }
 
 func formatRow(it DisplayItem, selected bool, width int) string {

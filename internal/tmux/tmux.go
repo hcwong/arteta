@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -75,6 +76,7 @@ func (c *realClient) base(args ...string) []string {
 
 func (c *realClient) run(args ...string) ([]byte, error) {
 	cmd := exec.Command("tmux", args...)
+	cmd.Env = artetaTmuxEnv()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -84,8 +86,25 @@ func (c *realClient) run(args ...string) ([]byte, error) {
 	return stdout.Bytes(), nil
 }
 
+// artetaTmuxEnv returns the environment to hand to a child tmux process. We
+// strip $TMUX so that running arteta from inside a personal tmux session
+// doesn't cause tmux to refuse to spawn a nested server (it will refuse
+// even when the child uses a different -L socket).
+func artetaTmuxEnv() []string {
+	env := os.Environ()
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "TMUX=") || strings.HasPrefix(kv, "TMUX_PANE=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 func (c *realClient) HasSession(name string) (bool, error) {
 	cmd := exec.Command("tmux", c.base("has-session", "-t", "="+name)...)
+	cmd.Env = artetaTmuxEnv()
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {

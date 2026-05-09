@@ -154,7 +154,32 @@ type Adapter interface {
 
 **Tradeoffs**: AppleScript is finicky and ~100ms per call. Tab ID staleness (user manually closes a tab) is a real concern. Mitigation: when focus fails, fall back to opening a new tab.
 
-**Revisit ⟳**: Move to the iTerm Python API for the next version — better events, richer introspection, fewer staleness footguns. User explicitly flagged this for the next iteration.
+**MVP build findings** (recorded after smoke-test debugging — keep these in mind if you ever touch `internal/terminal/iterm.go`):
+
+1. **iTerm tabs don't expose a settable `name`; sessions do.**
+   - `set name of tab N to "..."` fails with `(-10006)`. Use `set name of <session>` instead. Each Arteta tab has exactly one iTerm session (splits happen inside tmux), so `current session of <tab>` is unambiguous.
+
+2. **Tab references are scoped to their `tell` block.**
+   - `set targetTab to (create tab ...)` inside `tell current window` produces a reference like `tab 7 of window 712524`. Outside the `tell` block, AppleScript can't always resolve it. Capture identifiers inside the same `tell` block.
+
+3. **`id of tab` is unreliable across iTerm builds.**
+   - On some iTerm/macOS combos it returns `(-1728)` "object not found" even with a valid tab reference. The only stable identifier in iTerm AppleScript is `unique id of session` (a UUID).
+   - **Decision**: `TabHandle.TabID` stores a session UUID, not a tab id. All four script builders (`open`, `focus`, `close`, `exists`) iterate `tabs` and match by `unique id of current session of t`.
+
+4. **iTerm doesn't source the user's login shell when running a tab's startup command.**
+   - The command in `create tab with default profile command "<cmd>"` is exec'd directly. `$PATH` may miss `/usr/local/bin` and `/opt/homebrew/bin`, so `tmux` can fail with "no such program".
+   - **Mitigation**: `Service.attachCmd` uses `exec.LookPath("tmux")` to embed the absolute path before handing the command to iTerm.
+
+5. **Failure cascade to be aware of.**
+   - If any `osascript` invocation exits non-zero, `OpenTab` returns an error. `Service.Create` then runs `KillSession` to roll back tmux. The freshly-opened iTerm tab — which was running `tmux attach` — sees its session vanish and exits, triggering iTerm's "A session ended very soon after starting" warning. So that warning is usually a downstream symptom of an AppleScript bug, not an iTerm misconfiguration.
+
+**osascript vs. iTerm Python API — why we stay on osascript for MVP**:
+- *osascript wins on*: zero install (ships with macOS), no extra runtime dependency, simple subprocess model, sufficient for our 4 ops at low frequency.
+- *Python API wins on*: better events (real async), richer introspection, no AppleScript footguns, no `tab` vs `session` quirks.
+- *Why not switch now*: cost is a from-scratch rewrite of `internal/terminal/iterm.go` plus shipping/depending on Python and the `iterm2` package (or talking the WebSocket protocol from Go directly, for which no maintained library exists). For MVP-scale ops we now have a known-good osascript implementation; the bugs we hit are documented above.
+- *When we'll switch*: once we want event-driven tab/session lifecycle (e.g. detect user manually closing a tab without polling), or once a 4th distinct AppleScript footgun appears.
+
+**Revisit ⟳**: Move to the iTerm Python API post-MVP — better events, richer introspection, fewer staleness footguns. User explicitly flagged this for the next iteration.
 
 ---
 
@@ -318,8 +343,10 @@ In rough priority order:
 3. **Auto-revive on Arteta start** — if dormant model gets tedious.
 4. **SQLite for event history** — when an event-history feature lands.
 5. **Plugin system** — terminal adapters, diff adapters (hunk, bat), customisable pane content. Best designed *after* MVP so the abstraction is shaped by real use.
-6. **Customisable hotkeys** — config file driven.
-7. **Homebrew + prebuilt binaries** — when stable.
-8. **Tmux scroll-back persistence** (resurrect-style) — for full restore-after-reboot.
-9. **Heartbeat / stuck detection** — improve state machine accuracy.
-10. **Multi-instance protection** — pidfile lock if running two TUIs gets confusing.
+6. **Two-column homepage layout** — workflow list on the left (~40% width), a detail panel on the right showing the selected workflow's full status, last hook event, cwd, branch, layout. Genuinely useful — solves "what do I see when I select a row?". MVP ships a single-column centered layout (`viewList` in `internal/tui/tui.go`) which is enough for now.
+7. **Cwd field: shell-path expansion + directory autocomplete** — in the new-workflow modal (`CreateForm.CwdInput` in `internal/tui/create.go`). Expand `~`, `~user`, `$VAR`, and resolve relative paths to absolute before submit. Live directory autocomplete via `textinput.SetSuggestions`, regenerated on each keystroke from `os.ReadDir` of the current path prefix. Mind the tab-key conflict: tab currently advances form field, so accepting suggestions would use right-arrow / ctrl-f (the textinput defaults). Validate the resolved directory exists before kicking off `tmux new-session` so we don't half-create state on a typo. MVP ships unexpanded literal cwd (tmux itself rejects bad paths, but the error surfaces late).
+8. **Customisable hotkeys** — config file driven.
+9. **Homebrew + prebuilt binaries** — when stable.
+10. **Tmux scroll-back persistence** (resurrect-style) — for full restore-after-reboot.
+11. **Heartbeat / stuck detection** — improve state machine accuracy.
+12. **Multi-instance protection** — pidfile lock if running two TUIs gets confusing.

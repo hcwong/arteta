@@ -7,7 +7,9 @@ package terminal
 // TabHandle uniquely identifies a tab so Arteta can focus or close it later.
 type TabHandle struct {
 	WindowID string `json:"window_id"`
-	TabID    string `json:"tab_id"`
+	// TabID holds an iTerm session unique id (UUID), not a numeric tab id —
+	// `id of tab` is unreliable across iTerm builds.
+	TabID string `json:"tab_id"`
 }
 
 // IsZero reports whether the handle is uninitialised.
