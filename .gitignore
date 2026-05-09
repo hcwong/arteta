@@ -1,0 +1,16 @@
+# Claude Code local settings (personal, not shared)
+.claude/settings.local.json
+
+# Go build artifacts
+/arteta
+/bin/
+/dist/
+*.test
+*.out
+coverage.*
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
