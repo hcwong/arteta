@@ -12,11 +12,12 @@ import (
 
 // CreateForm is the new-workflow modal state.
 type CreateForm struct {
-	NameInput textinput.Model
-	CwdInput  textinput.Model
-	Layout    workflow.Layout
-	Focus     int // 0=name, 1=cwd, 2=layout-radio
-	Err       string
+	NameInput  textinput.Model
+	CwdInput   textinput.Model
+	Layout     workflow.Layout
+	Focus      int // 0=name, 1=cwd, 2=layout-radio
+	Err        string
+	OpenPicker bool // set when user presses Tab on cwd field to request filepicker
 }
 
 // allLayouts is the order layouts appear in the radio.
@@ -56,7 +57,15 @@ func (f CreateForm) Update(msg tea.Msg) (CreateForm, tea.Cmd, bool, bool) {
 		switch k.String() {
 		case "esc":
 			return f, nil, false, true
-		case "tab", "down":
+		case "tab":
+			if f.Focus == 1 {
+				f.OpenPicker = true
+				return f, nil, false, false
+			}
+			f.Focus = (f.Focus + 1) % 3
+			f.applyFocus()
+			return f, nil, false, false
+		case "down":
 			f.Focus = (f.Focus + 1) % 3
 			f.applyFocus()
 			return f, nil, false, false

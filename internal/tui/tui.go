@@ -232,8 +232,14 @@ func (m Model) captureSelectedCmd() tea.Cmd {
 }
 
 func (m Model) updateCreate(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Tab on the cwd field opens the filepicker instead of advancing focus.
-	if k, ok := msg.(tea.KeyMsg); ok && k.Type == tea.KeyTab && m.create.Focus == 1 {
+	form, cmd, submitted, cancelled := m.create.Update(msg)
+	m.create = form
+	if cancelled {
+		m.mode = ModeList
+		return m, nil
+	}
+	if m.create.OpenPicker {
+		m.create.OpenPicker = false
 		startDir := strings.TrimSpace(m.create.CwdInput.Value())
 		if info, err := os.Stat(startDir); err != nil || !info.IsDir() {
 			startDir = m.DefaultCwd
@@ -248,13 +254,6 @@ func (m Model) updateCreate(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mode = ModeFilePicker
 		return m, m.picker.Init()
 	}
-
-	form, cmd, submitted, cancelled := m.create.Update(msg)
-	m.create = form
-	if cancelled {
-		m.mode = ModeList
-		return m, nil
-	}
 	if submitted {
 		opts := service.CreateOpts{
 			Name:   strings.TrimSpace(m.create.NameInput.Value()),
@@ -267,26 +266,27 @@ func (m Model) updateCreate(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateFilePicker(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Esc dismisses without changing cwd. Must be checked before picker.Update
-	// because the filepicker's Back keymap also binds to esc (navigates to parent).
-	if k, ok := msg.(tea.KeyMsg); ok && k.String() == "esc" {
-		m.mode = ModeCreate
-		m.create.Focus = 1
-		m.create.CwdInput.Focus()
-		return m, nil
+	if k, ok := msg.(tea.KeyMsg); ok {
+		switch k.String() {
+		case "esc":
+			// Cancel — must intercept before picker.Update since esc also navigates up.
+			m.mode = ModeCreate
+			m.create.Focus = 1
+			m.create.CwdInput.Focus()
+			return m, nil
+		case " ":
+			// Confirm current directory and return to form.
+			m.create.CwdInput.SetValue(m.picker.CurrentDirectory)
+			m.create.Focus = 1
+			m.create.CwdInput.Focus()
+			m.mode = ModeCreate
+			return m, nil
+		}
 	}
 
+	// All other keys (j/k navigate, l/enter open, h back) go to the picker.
 	var cmd tea.Cmd
 	m.picker, cmd = m.picker.Update(msg)
-
-	if didSelect, path := m.picker.DidSelectFile(msg); didSelect {
-		m.create.CwdInput.SetValue(path)
-		m.create.Focus = 1
-		m.create.CwdInput.Focus()
-		m.mode = ModeCreate
-		return m, nil
-	}
-
 	return m, cmd
 }
 
@@ -346,7 +346,7 @@ func (m Model) viewFilePicker() string {
 	b.WriteString("\n\n")
 	b.WriteString(m.picker.View())
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("[j/k] navigate   [l/⏎] open   [h] back   [Esc] cancel"))
+	b.WriteString(helpStyle.Render("[j/k] navigate   [l/⏎] open   [h] back   [space] select   [Esc] cancel"))
 	return modalStyle.Render(b.String())
 }
 

@@ -201,9 +201,16 @@ func TestCreateForm_CycleFocusAndLayout(t *testing.T) {
 	if f.Focus != 1 {
 		t.Errorf("after tab: %d, want 1", f.Focus)
 	}
+	// Tab on cwd field (Focus==1) sets OpenPicker instead of advancing focus.
 	f, _, _, _ = f.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if !f.OpenPicker {
+		t.Errorf("tab on cwd field should set OpenPicker")
+	}
+	// Down still cycles focus normally.
+	f.OpenPicker = false
+	f, _, _, _ = f.Update(tea.KeyMsg{Type: tea.KeyDown})
 	if f.Focus != 2 {
-		t.Errorf("after tab tab: %d, want 2", f.Focus)
+		t.Errorf("down on cwd: focus=%d, want 2", f.Focus)
 	}
 	// On layout row, right cycles forward.
 	want := nextLayout(f.Layout)
@@ -383,5 +390,26 @@ func TestFilePicker_EscReturnsToCwd(t *testing.T) {
 	}
 	if m.create.Focus != 1 {
 		t.Errorf("expected Focus==1 after Esc, got %d", m.create.Focus)
+	}
+}
+
+func TestFilePicker_SpaceSelectsCurrentDir(t *testing.T) {
+	m, _, _ := newTestModel(t)
+	m = sendKey(m, "n")
+	m = sendNamedKey(m, tea.KeyTab) // name -> cwd
+	m = sendNamedKey(m, tea.KeyTab) // cwd -> picker
+	if m.mode != ModeFilePicker {
+		t.Fatalf("expected ModeFilePicker, got mode=%d", m.mode)
+	}
+	// Space selects the current directory the picker is showing.
+	m = sendKey(m, " ")
+	if m.mode != ModeCreate {
+		t.Errorf("expected ModeCreate after space, got mode=%d", m.mode)
+	}
+	if m.create.Focus != 1 {
+		t.Errorf("expected Focus==1 after space, got %d", m.create.Focus)
+	}
+	if m.create.CwdInput.Value() == "" {
+		t.Error("expected cwd to be populated after space selection")
 	}
 }
