@@ -155,6 +155,22 @@ func (f *Fake) CapturePane(session string, pane int) (string, error) {
 	return f.paneOutput[session], nil
 }
 
+func (f *Fake) RespawnPane(session string, pane int, cmd string, env map[string]string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Calls = append(f.Calls, fmt.Sprintf("RespawnPane:%s:%d", session, pane))
+	s, ok := f.sessions[session]
+	if !ok {
+		return fmt.Errorf("session %q not found", session)
+	}
+	if pane < 0 || pane >= len(s.Panes) {
+		return fmt.Errorf("pane %d out of range (have %d)", pane, len(s.Panes))
+	}
+	s.Panes[pane].Cmd = cmd
+	s.Panes[pane].Current = foregroundOf(cmd)
+	return nil
+}
+
 // SetPaneOutput stores canned capture-pane output for a session. Used in
 // tests to simulate live tmux pane content.
 func (f *Fake) SetPaneOutput(session, content string) {

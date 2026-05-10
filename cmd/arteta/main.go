@@ -43,6 +43,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newDoctorCmd())
 	root.AddCommand(newCloseCmd())
 	root.AddCommand(newHookCmd())
+	root.AddCommand(newRestartCmd())
 	return root
 }
 
@@ -164,6 +165,29 @@ func newCloseCmd() *cobra.Command {
 				return err
 			}
 			fmt.Printf("Closed workflow %q\n", args[0])
+			return nil
+		},
+	}
+}
+
+func newRestartCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "restart",
+		Short: "Restart pane 0 (Claude) in all live workflows",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, svc, err := buildService()
+			if err != nil {
+				return err
+			}
+			n, err := svc.RestartAll()
+			if err != nil {
+				return err
+			}
+			s := "s"
+			if n == 1 {
+				s = ""
+			}
+			fmt.Printf("Restarted %d live workflow%s\n", n, s)
 			return nil
 		},
 	}

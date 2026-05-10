@@ -5,8 +5,10 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/hcwong/arteta/internal/store"
@@ -170,6 +172,65 @@ func (s *Service) Revive(name string) error {
 	}
 	w.ITermTab = &workflow.ITermTab{WindowID: tab.WindowID, TabID: tab.TabID}
 	return s.Store.SaveWorkflow(w)
+}
+
+// RestartAll restarts pane 0 (the Claude process) in every live workflow,
+// preserving the tmux session and all other panes. Dormant workflows are
+// skipped — they will pick up the new backend on next revive.
+// Restarts run in parallel; all errors are collected and joined.
+func (s *Service) RestartAll() (restarted int, err error) {
+	ws, err := s.Store.LoadAllWorkflows()
+	if err != nil {
+		return 0, err
+	}
+
+	// Filter to live workflows only.
+	live := make([]workflow.Workflow, 0, len(ws))
+	for _, w := range ws {
+		if has, _ := s.Tmux.HasSession(w.TmuxSession); has {
+			live = append(live, w)
+		}
+	}
+
+	if len(live) == 0 {
+		return 0, nil
+	}
+
+	type result struct {
+		name string
+		err  error
+	}
+	results := make(chan result, len(live))
+	var wg sync.WaitGroup
+
+	for _, w := range live {
+		wg.Add(1)
+		go func(w workflow.Workflow) {
+			defer wg.Done()
+			claudeCmd := "claude"
+			if w.ClaudeSessionID != "" {
+				claudeCmd = "claude --resume " + w.ClaudeSessionID
+			}
+			env := map[string]string{"ARTETA_WORKFLOW": w.Name}
+			results <- result{
+				name: w.Name,
+				err:  s.Tmux.RespawnPane(w.TmuxSession, 0, claudeCmd, env),
+			}
+		}(w)
+	}
+
+	wg.Wait()
+	close(results)
+
+	var errs []error
+	for r := range results {
+		if r.err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", r.name, r.err))
+		} else {
+			restarted++
+		}
+	}
+	return restarted, errors.Join(errs...)
 }
 
 // attachCmd returns the shell command that the new iTerm tab will run to

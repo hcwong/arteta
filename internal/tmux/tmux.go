@@ -58,6 +58,9 @@ type Client interface {
 	// CapturePane returns the rendered viewport of a pane with SGR escapes
 	// preserved (no cursor-control escapes). Used by the homepage preview.
 	CapturePane(session string, pane int) (string, error)
+	// RespawnPane kills the current command in pane <pane> and restarts it with
+	// cmd. Equivalent to `tmux respawn-pane -k -t <session>:<pane> cmd`.
+	RespawnPane(session string, pane int, cmd string, env map[string]string) error
 }
 
 // realClient shells out to `tmux -L <socket>`.
@@ -204,4 +207,15 @@ func (c *realClient) CapturePane(session string, pane int) (string, error) {
 		return "", err
 	}
 	return string(out), nil
+}
+
+func (c *realClient) RespawnPane(session string, pane int, cmd string, env map[string]string) error {
+	target := fmt.Sprintf("%s:%d", session, pane)
+	args := c.base("respawn-pane", "-k", "-t", target)
+	for k, v := range env {
+		args = append(args, "-e", k+"="+v)
+	}
+	args = append(args, cmd)
+	_, err := c.run(args...)
+	return err
 }

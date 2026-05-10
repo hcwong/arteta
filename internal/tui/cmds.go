@@ -28,6 +28,7 @@ type previewMsg struct {
 	err     error
 }
 type previewTickMsg struct{}
+type restartAllDoneMsg struct{ count int }
 
 func (e errMsg) Error() string { return e.err.Error() }
 
@@ -133,6 +134,16 @@ func reviveCmd(svc *service.Service, name string) tea.Cmd {
 			return errMsg{err}
 		}
 		return reviveDoneMsg{name: name}
+	}
+}
+
+func restartAllCmd(svc *service.Service) tea.Cmd {
+	return func() tea.Msg {
+		n, err := svc.RestartAll()
+		if err != nil {
+			return errMsg{err}
+		}
+		return restartAllDoneMsg{count: n}
 	}
 }
 

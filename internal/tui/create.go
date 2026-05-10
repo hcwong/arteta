@@ -150,6 +150,9 @@ func (f CreateForm) View() string {
 	}
 
 	hint := "[Tab/↑↓] field   [←→] layout   [⏎] create   [Esc] cancel"
+	if f.Focus == 1 {
+		hint = "[Tab] browse dirs   [↑↓] field   [←→] layout   [⏎] create   [Esc] cancel"
+	}
 	b.WriteString(helpStyle.Render(hint))
 
 	return modalStyle.Render(b.String())

@@ -3,8 +3,10 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/filepicker"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/fsnotify/fsnotify"
@@ -22,6 +24,8 @@ const (
 	ModeCreate
 	ModeConfirmDelete
 	ModeHelp
+	ModeConfirmRestart
+	ModeFilePicker
 )
 
 // Model is the root Bubble Tea model.
@@ -41,6 +45,7 @@ type Model struct {
 	pending     string
 	preview     map[string]string // last-good capture per workflow name
 	previewErrs map[string]int    // consecutive capture failures per name
+	picker      filepicker.Model
 }
 
 // previewErrThreshold is how many consecutive capture failures we tolerate
@@ -103,6 +108,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case reviveDoneMsg:
 		return m, loadWorkflowsCmd(m.Store, m.Service)
 
+	case restartAllDoneMsg:
+		return m, loadWorkflowsCmd(m.Store, m.Service)
+
 	case previewTickMsg:
 		return m, tea.Batch(m.captureSelectedCmd(), previewTickCmd())
 
@@ -134,11 +142,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateCreate(msg)
 		case ModeConfirmDelete:
 			return m.updateConfirm(msg)
+		case ModeConfirmRestart:
+			return m.updateConfirmRestart(msg)
 		case ModeHelp:
 			m.mode = ModeList
 			return m, nil
+		case ModeFilePicker:
+			return m.updateFilePicker(msg)
 		}
 	}
+
+	// Route non-key msgs to the filepicker when active (e.g. the async readDirMsg).
+	if m.mode == ModeFilePicker {
+		var cmd tea.Cmd
+		m.picker, cmd = m.picker.Update(msg)
+		return m, cmd
+	}
+
 	return m, nil
 }
 
@@ -178,6 +198,17 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.pending = it.Workflow.Name
 			m.mode = ModeConfirmDelete
 		}
+	case "R":
+		hasLive := false
+		for _, it := range m.items {
+			if !it.Dormant {
+				hasLive = true
+				break
+			}
+		}
+		if hasLive {
+			m.mode = ModeConfirmRestart
+		}
 	}
 	if m.cursor != prevCursor {
 		return m, m.captureSelectedCmd()
@@ -201,6 +232,23 @@ func (m Model) captureSelectedCmd() tea.Cmd {
 }
 
 func (m Model) updateCreate(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Tab on the cwd field opens the filepicker instead of advancing focus.
+	if k, ok := msg.(tea.KeyMsg); ok && k.Type == tea.KeyTab && m.create.Focus == 1 {
+		startDir := strings.TrimSpace(m.create.CwdInput.Value())
+		if info, err := os.Stat(startDir); err != nil || !info.IsDir() {
+			startDir = m.DefaultCwd
+		}
+		fp := filepicker.New()
+		fp.CurrentDirectory = startDir
+		fp.DirAllowed = true
+		fp.FileAllowed = false
+		fp.ShowHidden = false
+		fp.AutoHeight = true
+		m.picker = fp
+		m.mode = ModeFilePicker
+		return m, m.picker.Init()
+	}
+
 	form, cmd, submitted, cancelled := m.create.Update(msg)
 	m.create = form
 	if cancelled {
@@ -216,6 +264,41 @@ func (m Model) updateCreate(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, createCmd(m.Service, opts)
 	}
 	return m, cmd
+}
+
+func (m Model) updateFilePicker(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Esc dismisses without changing cwd. Must be checked before picker.Update
+	// because the filepicker's Back keymap also binds to esc (navigates to parent).
+	if k, ok := msg.(tea.KeyMsg); ok && k.String() == "esc" {
+		m.mode = ModeCreate
+		m.create.Focus = 1
+		m.create.CwdInput.Focus()
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.picker, cmd = m.picker.Update(msg)
+
+	if didSelect, path := m.picker.DidSelectFile(msg); didSelect {
+		m.create.CwdInput.SetValue(path)
+		m.create.Focus = 1
+		m.create.CwdInput.Focus()
+		m.mode = ModeCreate
+		return m, nil
+	}
+
+	return m, cmd
+}
+
+func (m Model) updateConfirmRestart(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y", "enter":
+		m.mode = ModeList
+		return m, restartAllCmd(m.Service)
+	case "n", "N", "esc", "q":
+		m.mode = ModeList
+	}
+	return m, nil
 }
 
 func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -245,10 +328,26 @@ func (m Model) View() string {
 		return center(m.create.View(), m.width, m.height)
 	case ModeConfirmDelete:
 		return center(m.viewConfirm(), m.width, m.height)
+	case ModeConfirmRestart:
+		return center(m.viewConfirmRestart(), m.width, m.height)
 	case ModeHelp:
 		return center(m.viewHelp(), m.width, m.height)
+	case ModeFilePicker:
+		return center(m.viewFilePicker(), m.width, m.height)
 	}
 	return m.viewList()
+}
+
+func (m Model) viewFilePicker() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("Choose directory"))
+	b.WriteString("\n\n")
+	b.WriteString(dimStyle.Render(m.picker.CurrentDirectory))
+	b.WriteString("\n\n")
+	b.WriteString(m.picker.View())
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("[j/k] navigate   [l/⏎] open   [h] back   [Esc] cancel"))
+	return modalStyle.Render(b.String())
 }
 
 // previewWidthThreshold is the minimum terminal width at which we render
@@ -394,7 +493,7 @@ func (m Model) renderListBody() string {
 }
 
 func (m Model) renderListFooter() string {
-	footer := helpStyle.Render("j/k move  ⏎ open  n new  D close  r refresh  ? help  q quit")
+	footer := helpStyle.Render("j/k move  ⏎ open  n new  D close  r refresh  R restart all  ? help  q quit")
 	if m.err != nil {
 		footer = errorStyle.Render("error: "+m.err.Error()) + "\n" + footer
 	}
@@ -467,6 +566,20 @@ func (m Model) viewConfirm() string {
 	return modalStyle.Render(body)
 }
 
+func (m Model) viewConfirmRestart() string {
+	liveCount := 0
+	for _, it := range m.items {
+		if !it.Dormant {
+			liveCount++
+		}
+	}
+	body := fmt.Sprintf(
+		"Restart Claude in %d live workflow%s?\n\nThis kills and respawns pane 0 with --resume.\nOther panes are preserved.\n\n[y] yes  [n] no",
+		liveCount, plural(liveCount),
+	)
+	return modalStyle.Render(body)
+}
+
 func (m Model) viewHelp() string {
 	body := strings.Join([]string{
 		titleStyle.Render("Arteta keybindings"),
@@ -477,6 +590,7 @@ func (m Model) viewHelp() string {
 		"  n             new workflow",
 		"  D             close workflow (with confirm)",
 		"  r             refresh",
+		"  R             restart all live workflows (Claude pane only)",
 		"  ?             this help",
 		"  q             quit Arteta (workflows keep running)",
 		"",

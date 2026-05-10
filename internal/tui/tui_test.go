@@ -353,3 +353,35 @@ func TestCreateForm_Submit_Succeeds(t *testing.T) {
 		t.Error("expected submit=true with valid name + cwd")
 	}
 }
+
+func TestCwdTab_OpensPicker(t *testing.T) {
+	m, _, _ := newTestModel(t)
+	m = sendKey(m, "n") // enter ModeCreate
+	// Tab once: name -> cwd
+	m = sendNamedKey(m, tea.KeyTab)
+	if m.create.Focus != 1 {
+		t.Fatalf("expected Focus==1 after first tab, got %d", m.create.Focus)
+	}
+	// Tab again: cwd -> filepicker
+	m = sendNamedKey(m, tea.KeyTab)
+	if m.mode != ModeFilePicker {
+		t.Errorf("expected ModeFilePicker after tab on cwd, got mode=%d", m.mode)
+	}
+}
+
+func TestFilePicker_EscReturnsToCwd(t *testing.T) {
+	m, _, _ := newTestModel(t)
+	m = sendKey(m, "n")
+	m = sendNamedKey(m, tea.KeyTab) // name -> cwd
+	m = sendNamedKey(m, tea.KeyTab) // cwd -> picker
+	if m.mode != ModeFilePicker {
+		t.Fatalf("expected ModeFilePicker, got mode=%d", m.mode)
+	}
+	m = sendNamedKey(m, tea.KeyEsc)
+	if m.mode != ModeCreate {
+		t.Errorf("expected ModeCreate after Esc, got mode=%d", m.mode)
+	}
+	if m.create.Focus != 1 {
+		t.Errorf("expected Focus==1 after Esc, got %d", m.create.Focus)
+	}
+}

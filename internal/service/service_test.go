@@ -205,6 +205,86 @@ func TestRevive_NoSessionID_LaunchesFreshClaude(t *testing.T) {
 	}
 }
 
+func TestRestartAll_LiveSessionsGetRespawned(t *testing.T) {
+	s, tx, _, st := newTestService(t)
+
+	// Create two live workflows.
+	if _, err := s.Create(CreateOpts{Name: "wf1", Cwd: "/r", Layout: workflow.LayoutSingle}); err != nil {
+		t.Fatalf("Create wf1: %v", err)
+	}
+	if _, err := s.Create(CreateOpts{Name: "wf2", Cwd: "/r", Layout: workflow.LayoutSingle}); err != nil {
+		t.Fatalf("Create wf2: %v", err)
+	}
+
+	// Give wf2 a known ClaudeSessionID.
+	w2, _ := st.LoadWorkflow("wf2")
+	w2.ClaudeSessionID = "sess-abc"
+	_ = st.SaveWorkflow(w2)
+
+	tx.Calls = nil
+	n, err := s.RestartAll()
+	if err != nil {
+		t.Fatalf("RestartAll: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("RestartAll returned %d, want 2", n)
+	}
+
+	// Both sessions should have had RespawnPane called.
+	respawn1 := containsCall(tx.Calls, "RespawnPane:arteta-wf1:0")
+	respawn2 := containsCall(tx.Calls, "RespawnPane:arteta-wf2:0")
+	if !respawn1 || !respawn2 {
+		t.Errorf("RespawnPane calls: %v", tx.Calls)
+	}
+
+	// wf1 has no session ID → cmd should be plain "claude".
+	sess1 := tx.Sessions()["arteta-wf1"]
+	if sess1.Panes[0].Cmd != "claude" {
+		t.Errorf("wf1 pane cmd: got %q, want %q", sess1.Panes[0].Cmd, "claude")
+	}
+
+	// wf2 has a session ID → cmd should be "claude --resume sess-abc".
+	sess2 := tx.Sessions()["arteta-wf2"]
+	if !strings.Contains(sess2.Panes[0].Cmd, "claude --resume sess-abc") {
+		t.Errorf("wf2 pane cmd: got %q, want claude --resume sess-abc", sess2.Panes[0].Cmd)
+	}
+}
+
+func TestRestartAll_DormantSessionsSkipped(t *testing.T) {
+	s, tx, _, _ := newTestService(t)
+
+	// Create one workflow and kill the tmux session to make it dormant.
+	if _, err := s.Create(CreateOpts{Name: "dormant", Cwd: "/r", Layout: workflow.LayoutSingle}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	_ = tx.KillSession("arteta-dormant")
+
+	tx.Calls = nil
+	n, err := s.RestartAll()
+	if err != nil {
+		t.Fatalf("RestartAll: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("RestartAll returned %d, want 0", n)
+	}
+	for _, c := range tx.Calls {
+		if strings.HasPrefix(c, "RespawnPane") {
+			t.Errorf("RespawnPane should not be called for dormant session, got: %v", tx.Calls)
+		}
+	}
+}
+
+func TestRestartAll_NoWorkflows_ReturnsZero(t *testing.T) {
+	s, _, _, _ := newTestService(t)
+	n, err := s.RestartAll()
+	if err != nil {
+		t.Fatalf("RestartAll: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("RestartAll returned %d, want 0", n)
+	}
+}
+
 func containsCall(calls []string, prefix string) bool {
 	for _, c := range calls {
 		if strings.HasPrefix(c, prefix) {
