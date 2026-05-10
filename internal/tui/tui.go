@@ -84,7 +84,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cursor >= len(m.items) {
 			m.cursor = max(0, len(m.items)-1)
 		}
-		return m, nil
+		// Pre-populate preview cache for any workflow not yet captured so
+		// navigating to it for the first time shows real content, not "(loading…)".
+		return m, captureUncachedCmd(m.Service, m.items, m.preview)
 
 	case fsnotifyReadyMsg:
 		m.events = msg.events
@@ -457,6 +459,11 @@ func clipPreviewBody(s string, maxCols, maxRows int) string {
 	if maxRows <= 0 || maxCols <= 0 {
 		return ""
 	}
+	// Normalise line endings: tmux capture-pane can emit \r\n or bare \r on
+	// some systems; stray \r in terminal output causes cursor-to-column-0
+	// rewrites that make lines overwrite each other visually.
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
 	if len(lines) > maxRows {
 		lines = lines[len(lines)-maxRows:]

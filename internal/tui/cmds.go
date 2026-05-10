@@ -158,6 +158,22 @@ func capturePaneCmd(svc *service.Service, name, sessionName string) tea.Cmd {
 	}
 }
 
+// captureUncachedCmd fires a CapturePane for every live workflow whose preview
+// cache is currently empty. Called after loading workflows so that navigating
+// to any workflow for the first time shows real content instead of "(loading…)".
+func captureUncachedCmd(svc *service.Service, items []DisplayItem, cached map[string]string) tea.Cmd {
+	var cmds []tea.Cmd
+	for _, it := range items {
+		if it.Dormant || it.Workflow.TmuxSession == "" {
+			continue
+		}
+		if cached[it.Workflow.Name] == "" {
+			cmds = append(cmds, capturePaneCmd(svc, it.Workflow.Name, it.Workflow.TmuxSession))
+		}
+	}
+	return tea.Batch(cmds...)
+}
+
 // previewTickCmd schedules the next preview refresh tick.
 func previewTickCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(time.Time) tea.Msg {
