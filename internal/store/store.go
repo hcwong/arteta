@@ -38,6 +38,7 @@ func (s *Store) Root() string          { return s.root }
 func (s *Store) WorkflowsDir() string  { return filepath.Join(s.root, "workflows") }
 func (s *Store) SessionsDir() string   { return filepath.Join(s.root, "sessions") }
 func (s *Store) ConfigPath() string    { return filepath.Join(s.root, "config.json") }
+func (s *Store) PinsPath() string      { return filepath.Join(s.root, "pins.json") }
 func (s *Store) workflowPath(name string) string {
 	return filepath.Join(s.WorkflowsDir(), name+".json")
 }
@@ -107,6 +108,23 @@ func (s *Store) DeleteWorkflow(name string) error {
 		return fmt.Errorf("remove status file: %w", err)
 	}
 	return nil
+}
+
+// LoadPins reads the list of pinned workflow names. Returns nil if no pins file exists.
+func (s *Store) LoadPins() ([]string, error) {
+	var pins []string
+	if err := readJSON(s.PinsPath(), &pins); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return pins, nil
+}
+
+// SavePins persists the list of pinned workflow names atomically.
+func (s *Store) SavePins(pins []string) error {
+	return writeJSONAtomic(s.PinsPath(), pins)
 }
 
 // SaveStatus writes a status file for a workflow. Used by the hook subcommand.

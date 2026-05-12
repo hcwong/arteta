@@ -2,6 +2,7 @@ package tui
 
 import (
 	"path/filepath"
+	"sort"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -48,6 +49,14 @@ func loadWorkflowsCmd(s *store.Store, svc *service.Service) tea.Cmd {
 		for _, w := range r.Live {
 			liveByName[w.Name] = true
 		}
+		pins, err := s.LoadPins()
+		if err != nil {
+			return errMsg{err}
+		}
+		pinnedSet := map[string]bool{}
+		for _, name := range pins {
+			pinnedSet[name] = true
+		}
 		items := make([]DisplayItem, 0, len(ws))
 		for _, w := range ws {
 			st, _ := s.LoadStatus(w.Name)
@@ -55,8 +64,12 @@ func loadWorkflowsCmd(s *store.Store, svc *service.Service) tea.Cmd {
 				Workflow: w,
 				Status:   st,
 				Dormant:  !liveByName[w.Name],
+				Pinned:   pinnedSet[w.Name],
 			})
 		}
+		sort.SliceStable(items, func(i, j int) bool {
+			return items[i].Pinned && !items[j].Pinned
+		})
 		return workflowsLoadedMsg{items: items}
 	}
 }
@@ -186,6 +199,7 @@ type DisplayItem struct {
 	Workflow workflow.Workflow
 	Status   workflow.Status
 	Dormant  bool
+	Pinned   bool
 }
 
 func ensureDir(p string) error {

@@ -4,6 +4,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/filepicker"
@@ -200,6 +201,24 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.pending = it.Workflow.Name
 			m.mode = ModeConfirmDelete
 		}
+	case "p":
+		if it := m.selected(); it != nil {
+			name := it.Workflow.Name
+			if err := m.togglePin(name); err != nil {
+				m.err = err
+				return m, nil
+			}
+			m.items[m.cursor].Pinned = !m.items[m.cursor].Pinned
+			sort.SliceStable(m.items, func(i, j int) bool {
+				return m.items[i].Pinned && !m.items[j].Pinned
+			})
+			for i, item := range m.items {
+				if item.Workflow.Name == name {
+					m.cursor = i
+					break
+				}
+			}
+		}
 	case "R":
 		hasLive := false
 		for _, it := range m.items {
@@ -315,6 +334,19 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = ModeList
 	}
 	return m, nil
+}
+
+func (m Model) togglePin(name string) error {
+	pins, err := m.Store.LoadPins()
+	if err != nil {
+		return err
+	}
+	for i, p := range pins {
+		if p == name {
+			return m.Store.SavePins(append(pins[:i], pins[i+1:]...))
+		}
+	}
+	return m.Store.SavePins(append(pins, name))
 }
 
 func (m Model) selected() *DisplayItem {
@@ -491,8 +523,30 @@ func (m Model) renderListBody() string {
 		b.WriteString("\n")
 	}
 
+	hasPinned := len(m.items) > 0 && m.items[0].Pinned
+	hasUnpinned := false
+	for _, it := range m.items {
+		if !it.Pinned {
+			hasUnpinned = true
+			break
+		}
+	}
+
+	inPinnedSection := false
+	inUnpinnedSection := false
+	w := contentWidth(m.width)
 	for i, it := range m.items {
-		row := formatRow(it, i == m.cursor, contentWidth(m.width))
+		if hasPinned && it.Pinned && !inPinnedSection {
+			b.WriteString(dimStyle.Render("  ─ pinned"))
+			b.WriteString("\n")
+			inPinnedSection = true
+		}
+		if hasPinned && hasUnpinned && !it.Pinned && !inUnpinnedSection {
+			b.WriteString(dimStyle.Render("  ─ workflows"))
+			b.WriteString("\n")
+			inUnpinnedSection = true
+		}
+		row := formatRow(it, i == m.cursor, w)
 		b.WriteString(row)
 		b.WriteString("\n")
 	}
@@ -500,7 +554,7 @@ func (m Model) renderListBody() string {
 }
 
 func (m Model) renderListFooter() string {
-	footer := helpStyle.Render("j/k move  ⏎ open  n new  D close  r refresh  R restart all  ? help  q quit")
+	footer := helpStyle.Render("j/k move  ⏎ open  n new  p pin  D close  r refresh  R restart all  ? help  q quit")
 	if m.err != nil {
 		footer = errorStyle.Render("error: "+m.err.Error()) + "\n" + footer
 	}
@@ -595,6 +649,7 @@ func (m Model) viewHelp() string {
 		"  g / G         jump to top / bottom",
 		"  ⏎             open selected workflow (or revive if dormant)",
 		"  n             new workflow",
+		"  p             pin / unpin workflow",
 		"  D             close workflow (with confirm)",
 		"  r             refresh",
 		"  R             restart all live workflows (Claude pane only)",
