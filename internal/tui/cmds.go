@@ -68,7 +68,9 @@ func loadWorkflowsCmd(s *store.Store, svc *service.Service) tea.Cmd {
 			})
 		}
 		sort.SliceStable(items, func(i, j int) bool {
-			return items[i].Pinned && !items[j].Pinned
+			pi, _ := sectionOf(items[i])
+			pj, _ := sectionOf(items[j])
+			return pi < pj
 		})
 		return workflowsLoadedMsg{items: items}
 	}
@@ -192,6 +194,26 @@ func previewTickCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(time.Time) tea.Msg {
 		return previewTickMsg{}
 	})
+}
+
+// sectionOf returns the sort priority and display label for the section an item
+// belongs to. Priority order: pinned(0) → awaiting input(1) → running(2) →
+// idle(3) → dormant(4). Used for both sorting and rendering.
+func sectionOf(it DisplayItem) (priority int, label string) {
+	if it.Pinned {
+		return 0, "pinned"
+	}
+	if it.Dormant {
+		return 4, "dormant"
+	}
+	switch it.Status.State() {
+	case workflow.StateAwaitingInput:
+		return 1, "awaiting input"
+	case workflow.StateRunning:
+		return 2, "running"
+	default: // StateIdle, StateUnknown
+		return 3, "idle"
+	}
 }
 
 // DisplayItem is the per-row data the homepage renders.

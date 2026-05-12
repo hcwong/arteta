@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -411,5 +412,200 @@ func TestFilePicker_SpaceSelectsCurrentDir(t *testing.T) {
 	}
 	if m.create.CwdInput.Value() == "" {
 		t.Error("expected cwd to be populated after space selection")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// sectionOf
+// ---------------------------------------------------------------------------
+
+func TestSectionOf(t *testing.T) {
+	tests := []struct {
+		name          string
+		item          DisplayItem
+		wantPriority  int
+		wantLabel     string
+	}{
+		{
+			name:         "pinned",
+			item:         DisplayItem{Pinned: true},
+			wantPriority: 0,
+			wantLabel:    "pinned",
+		},
+		{
+			name:         "dormant",
+			item:         DisplayItem{Dormant: true},
+			wantPriority: 4,
+			wantLabel:    "dormant",
+		},
+		{
+			name:         "awaiting input",
+			item:         DisplayItem{Status: workflow.Status{LastEvent: "Notification"}},
+			wantPriority: 1,
+			wantLabel:    "awaiting input",
+		},
+		{
+			name:         "running",
+			item:         DisplayItem{Status: workflow.Status{LastEvent: "UserPromptSubmit"}},
+			wantPriority: 2,
+			wantLabel:    "running",
+		},
+		{
+			name:         "idle via Stop event",
+			item:         DisplayItem{Status: workflow.Status{LastEvent: "Stop"}},
+			wantPriority: 3,
+			wantLabel:    "idle",
+		},
+		{
+			name:         "idle via empty LastEvent (StateUnknown)",
+			item:         DisplayItem{Status: workflow.Status{}},
+			wantPriority: 3,
+			wantLabel:    "idle",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotPriority, gotLabel := sectionOf(tc.item)
+			if gotPriority != tc.wantPriority || gotLabel != tc.wantLabel {
+				t.Errorf("sectionOf(%+v) = (%d, %q), want (%d, %q)",
+					tc.item, gotPriority, gotLabel, tc.wantPriority, tc.wantLabel)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Sort order via sectionOf comparator
+// ---------------------------------------------------------------------------
+
+func TestSortOrder_SectionOf(t *testing.T) {
+	// Build items in reverse priority order.
+	items := []DisplayItem{
+		{Workflow: workflow.Workflow{Name: "d"}, Dormant: true},                                // priority 4
+		{Workflow: workflow.Workflow{Name: "i"}, Status: workflow.Status{LastEvent: "Stop"}},   // priority 3
+		{Workflow: workflow.Workflow{Name: "r"}, Status: workflow.Status{LastEvent: "UserPromptSubmit"}}, // priority 2
+		{Workflow: workflow.Workflow{Name: "a"}, Status: workflow.Status{LastEvent: "Notification"}},     // priority 1
+		{Workflow: workflow.Workflow{Name: "p"}, Pinned: true},                                 // priority 0
+	}
+
+	sort.SliceStable(items, func(i, j int) bool {
+		pi, _ := sectionOf(items[i])
+		pj, _ := sectionOf(items[j])
+		return pi < pj
+	})
+
+	wantOrder := []string{"p", "a", "r", "i", "d"}
+	for idx, want := range wantOrder {
+		if items[idx].Workflow.Name != want {
+			t.Errorf("items[%d].Name = %q, want %q (full order: %v)",
+				idx, items[idx].Workflow.Name, want, itemNames(items))
+		}
+	}
+}
+
+func itemNames(items []DisplayItem) []string {
+	names := make([]string, len(items))
+	for i, it := range items {
+		names[i] = it.Workflow.Name
+	}
+	return names
+}
+
+// ---------------------------------------------------------------------------
+// renderListBody section headers
+// ---------------------------------------------------------------------------
+
+func TestRenderListBody_SectionHeaders(t *testing.T) {
+	m, _, _ := newTestModel(t)
+
+	// Items spanning three different sections: awaiting input, running, idle.
+	updated, _ := m.Update(workflowsLoadedMsg{items: []DisplayItem{
+		{Workflow: workflow.Workflow{Name: "a1"}, Status: workflow.Status{LastEvent: "Notification"}},
+		{Workflow: workflow.Workflow{Name: "r1"}, Status: workflow.Status{LastEvent: "UserPromptSubmit"}},
+		{Workflow: workflow.Workflow{Name: "i1"}, Status: workflow.Status{LastEvent: "Stop"}},
+	}})
+	m = updated.(Model)
+
+	body := m.renderListBody()
+	for _, hdr := range []string{"─ awaiting input", "─ running", "─ idle"} {
+		if !strings.Contains(body, hdr) {
+			t.Errorf("expected header %q in body; got:\n%s", hdr, body)
+		}
+	}
+}
+
+func TestRenderListBody_EmptySectionProducesNoHeader(t *testing.T) {
+	m, _, _ := newTestModel(t)
+
+	// Only awaiting-input and idle items — no running items.
+	updated, _ := m.Update(workflowsLoadedMsg{items: []DisplayItem{
+		{Workflow: workflow.Workflow{Name: "a1"}, Status: workflow.Status{LastEvent: "Notification"}},
+		{Workflow: workflow.Workflow{Name: "i1"}, Status: workflow.Status{LastEvent: "Stop"}},
+	}})
+	m = updated.(Model)
+
+	body := m.renderListBody()
+	if strings.Contains(body, "─ running") {
+		t.Errorf("unexpected '─ running' header when no running items; got:\n%s", body)
+	}
+	if !strings.Contains(body, "─ awaiting input") {
+		t.Errorf("expected '─ awaiting input' header; got:\n%s", body)
+	}
+	if !strings.Contains(body, "─ idle") {
+		t.Errorf("expected '─ idle' header; got:\n%s", body)
+	}
+}
+
+func TestRenderListBody_SingleSectionHasOneHeader(t *testing.T) {
+	m, _, _ := newTestModel(t)
+
+	// All items are idle — only one "idle" header should appear.
+	updated, _ := m.Update(workflowsLoadedMsg{items: []DisplayItem{
+		{Workflow: workflow.Workflow{Name: "i1"}, Status: workflow.Status{LastEvent: "Stop"}},
+		{Workflow: workflow.Workflow{Name: "i2"}, Status: workflow.Status{LastEvent: "Stop"}},
+		{Workflow: workflow.Workflow{Name: "i3"}, Status: workflow.Status{LastEvent: "Stop"}},
+	}})
+	m = updated.(Model)
+
+	body := m.renderListBody()
+	count := strings.Count(body, "─ idle")
+	if count != 1 {
+		t.Errorf("expected exactly 1 '─ idle' header, got %d; body:\n%s", count, body)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Cursor name preservation after workflowsLoadedMsg
+// ---------------------------------------------------------------------------
+
+func TestCursorName_RestoredAfterReload(t *testing.T) {
+	m, _, _ := newTestModel(t)
+
+	// Load three items; cursor on "beta" (index 1).
+	updated, _ := m.Update(workflowsLoadedMsg{items: []DisplayItem{
+		{Workflow: workflow.Workflow{Name: "alpha"}},
+		{Workflow: workflow.Workflow{Name: "beta"}},
+		{Workflow: workflow.Workflow{Name: "gamma"}},
+	}})
+	m = updated.(Model)
+	m = sendKey(m, "j") // cursor -> 1 ("beta"), sets cursorName = "beta"
+	if m.cursor != 1 || m.cursorName != "beta" {
+		t.Fatalf("precondition: cursor=%d cursorName=%q, want 1/beta", m.cursor, m.cursorName)
+	}
+
+	// Reload with items in a different order; "beta" is now at index 2.
+	updated, _ = m.Update(workflowsLoadedMsg{items: []DisplayItem{
+		{Workflow: workflow.Workflow{Name: "alpha"}},
+		{Workflow: workflow.Workflow{Name: "gamma"}},
+		{Workflow: workflow.Workflow{Name: "beta"}},
+	}})
+	m = updated.(Model)
+
+	if m.cursor != 2 {
+		t.Errorf("cursor = %d after reload, want 2 (index of 'beta')", m.cursor)
+	}
+	if m.items[m.cursor].Workflow.Name != "beta" {
+		t.Errorf("cursor points to %q, want 'beta'", m.items[m.cursor].Workflow.Name)
 	}
 }

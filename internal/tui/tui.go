@@ -4,7 +4,6 @@ package tui
 import (
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/filepicker"
@@ -37,6 +36,7 @@ type Model struct {
 
 	items       []DisplayItem
 	cursor      int
+	cursorName  string
 	mode        Mode
 	create      CreateForm
 	err         error
@@ -82,7 +82,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case workflowsLoadedMsg:
 		m.items = msg.items
-		if m.cursor >= len(m.items) {
+		restored := false
+		if m.cursorName != "" {
+			for i, it := range m.items {
+				if it.Workflow.Name == m.cursorName {
+					m.cursor = i
+					restored = true
+					break
+				}
+			}
+		}
+		if !restored && m.cursor >= len(m.items) {
 			m.cursor = max(0, len(m.items)-1)
 		}
 		// Pre-populate preview cache for any workflow not yet captured so
@@ -208,16 +218,8 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.err = err
 				return m, nil
 			}
-			m.items[m.cursor].Pinned = !m.items[m.cursor].Pinned
-			sort.SliceStable(m.items, func(i, j int) bool {
-				return m.items[i].Pinned && !m.items[j].Pinned
-			})
-			for i, item := range m.items {
-				if item.Workflow.Name == name {
-					m.cursor = i
-					break
-				}
-			}
+			m.cursorName = name
+			return m, loadWorkflowsCmd(m.Store, m.Service)
 		}
 	case "R":
 		hasLive := false
@@ -232,6 +234,9 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if m.cursor != prevCursor {
+		if m.cursor >= 0 && m.cursor < len(m.items) {
+			m.cursorName = m.items[m.cursor].Workflow.Name
+		}
 		return m, m.captureSelectedCmd()
 	}
 	return m, nil
@@ -523,28 +528,14 @@ func (m Model) renderListBody() string {
 		b.WriteString("\n")
 	}
 
-	hasPinned := len(m.items) > 0 && m.items[0].Pinned
-	hasUnpinned := false
-	for _, it := range m.items {
-		if !it.Pinned {
-			hasUnpinned = true
-			break
-		}
-	}
-
-	inPinnedSection := false
-	inUnpinnedSection := false
+	currentSection := ""
 	w := contentWidth(m.width)
 	for i, it := range m.items {
-		if hasPinned && it.Pinned && !inPinnedSection {
-			b.WriteString(dimStyle.Render("  ─ pinned"))
+		_, section := sectionOf(it)
+		if section != currentSection {
+			b.WriteString(dimStyle.Render("  ─ " + section))
 			b.WriteString("\n")
-			inPinnedSection = true
-		}
-		if hasPinned && hasUnpinned && !it.Pinned && !inUnpinnedSection {
-			b.WriteString(dimStyle.Render("  ─ workflows"))
-			b.WriteString("\n")
-			inUnpinnedSection = true
+			currentSection = section
 		}
 		row := formatRow(it, i == m.cursor, w)
 		b.WriteString(row)
