@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/fsnotify/fsnotify"
 
+	"github.com/hcwong/arteta/internal/detect"
 	"github.com/hcwong/arteta/internal/reconcile"
 	"github.com/hcwong/arteta/internal/service"
 	"github.com/hcwong/arteta/internal/store"
@@ -17,16 +18,26 @@ import (
 // Messages flowing into Update.
 
 type workflowsLoadedMsg struct{ items []DisplayItem }
-type statusChangedMsg struct{ workflowName string }
+
+// statusChangedMsg is emitted when a session file changes. It carries the
+// pre-loaded status so the Update handler can do a targeted in-place update
+// instead of a full workflow reload.
+type statusChangedMsg struct {
+	workflowName string
+	status       workflow.Status
+	loadErr      error
+}
+
 type fsnotifyReadyMsg struct{ events <-chan fsnotify.Event }
 type errMsg struct{ err error }
 type createDoneMsg struct{ name string }
 type closeDoneMsg struct{ name string }
 type reviveDoneMsg struct{ name string }
 type previewMsg struct {
-	name    string
-	content string
-	err     error
+	name        string
+	content     string
+	screenState workflow.State // detected from pane content; StateUnknown = no signal
+	err         error
 }
 type previewTickMsg struct{}
 type restartAllDoneMsg struct{ count int }
@@ -67,11 +78,7 @@ func loadWorkflowsCmd(s *store.Store, svc *service.Service) tea.Cmd {
 				Pinned:   pinnedSet[w.Name],
 			})
 		}
-		sort.SliceStable(items, func(i, j int) bool {
-			pi, _ := sectionOf(items[i])
-			pj, _ := sectionOf(items[j])
-			return pi < pj
-		})
+		sortItems(items)
 		return workflowsLoadedMsg{items: items}
 	}
 }
@@ -94,9 +101,10 @@ func startWatchCmd(sessionsDir string) tea.Cmd {
 	}
 }
 
-// waitForStatusCmd blocks on the next fsnotify event and translates it to
-// a statusChangedMsg. Re-issued by Update after each event.
-func waitForStatusCmd(events <-chan fsnotify.Event) tea.Cmd {
+// waitForStatusCmd blocks on the next fsnotify event and translates it to a
+// statusChangedMsg that includes the pre-loaded status. Re-issued by Update
+// after each event so the next change is observed.
+func waitForStatusCmd(events <-chan fsnotify.Event, s *store.Store) tea.Cmd {
 	return func() tea.Msg {
 		ev, ok := <-events
 		if !ok {
@@ -105,14 +113,15 @@ func waitForStatusCmd(events <-chan fsnotify.Event) tea.Cmd {
 		// Filter out tmpfile churn from the atomic rename pattern.
 		base := filepath.Base(ev.Name)
 		if len(base) > 0 && base[0] == '.' {
-			return statusChangedMsg{workflowName: ""}
+			return statusChangedMsg{}
 		}
-		// Strip ".json".
+		// Strip ".json" to recover the workflow name.
 		name := base
 		if ext := filepath.Ext(name); ext == ".json" {
 			name = name[:len(name)-len(ext)]
 		}
-		return statusChangedMsg{workflowName: name}
+		st, err := s.LoadStatus(name)
+		return statusChangedMsg{workflowName: name, status: st, loadErr: err}
 	}
 }
 
@@ -162,14 +171,18 @@ func restartAllCmd(svc *service.Service) tea.Cmd {
 	}
 }
 
-// capturePaneCmd snapshots pane 0 of a workflow's tmux session. Errors
-// ride on previewMsg.err so the model can decide whether to surface them
-// (instead of polluting the persistent m.err channel on every transient
-// race with KillSession).
+// capturePaneCmd snapshots pane 0 of a workflow's tmux session and runs screen
+// heuristic detection on the result. Errors ride on previewMsg.err so the
+// model can decide whether to surface them (instead of polluting the persistent
+// m.err channel on every transient race with KillSession).
 func capturePaneCmd(svc *service.Service, name, sessionName string) tea.Cmd {
 	return func() tea.Msg {
 		out, err := svc.Tmux.CapturePane(sessionName, 0)
-		return previewMsg{name: name, content: out, err: err}
+		if err != nil {
+			return previewMsg{name: name, err: err}
+		}
+		screenState, _ := detect.FromPaneContent(out)
+		return previewMsg{name: name, content: out, screenState: screenState}
 	}
 }
 
@@ -198,7 +211,8 @@ func previewTickCmd() tea.Cmd {
 
 // sectionOf returns the sort priority and display label for the section an item
 // belongs to. Priority order: pinned(0) → awaiting input(1) → running(2) →
-// idle(3) → dormant(4). Used for both sorting and rendering.
+// idle(3) → dormant(4). Uses EffectiveState so screen-detected state is
+// reflected in sort order. Used for both sorting and rendering.
 func sectionOf(it DisplayItem) (priority int, label string) {
 	if it.Pinned {
 		return 0, "pinned"
@@ -206,7 +220,7 @@ func sectionOf(it DisplayItem) (priority int, label string) {
 	if it.Dormant {
 		return 4, "dormant"
 	}
-	switch it.Status.State() {
+	switch it.EffectiveState() {
 	case workflow.StateAwaitingInput:
 		return 1, "awaiting input"
 	case workflow.StateRunning:
@@ -216,12 +230,32 @@ func sectionOf(it DisplayItem) (priority int, label string) {
 	}
 }
 
+// sortItems sorts items in-place by section priority.
+func sortItems(items []DisplayItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		pi, _ := sectionOf(items[i])
+		pj, _ := sectionOf(items[j])
+		return pi < pj
+	})
+}
+
 // DisplayItem is the per-row data the homepage renders.
 type DisplayItem struct {
-	Workflow workflow.Workflow
-	Status   workflow.Status
-	Dormant  bool
-	Pinned   bool
+	Workflow    workflow.Workflow
+	Status      workflow.Status
+	Dormant     bool
+	Pinned      bool
+	ScreenState workflow.State // detected from pane content; StateUnknown = no signal
+}
+
+// EffectiveState returns the display state for this item. Screen-detected state
+// takes precedence over hook-reported state when it carries a signal, giving
+// the UI a fallback when hook events are dropped or delayed.
+func (it DisplayItem) EffectiveState() workflow.State {
+	if it.ScreenState != workflow.StateUnknown {
+		return it.ScreenState
+	}
+	return it.Status.State()
 }
 
 func ensureDir(p string) error {

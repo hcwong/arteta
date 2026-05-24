@@ -42,11 +42,12 @@ type Model struct {
 	err         error
 	width       int
 	height      int
-	events      <-chan fsnotify.Event
-	pending     string
-	preview     map[string]string // last-good capture per workflow name
-	previewErrs map[string]int    // consecutive capture failures per name
-	picker      filepicker.Model
+	events       <-chan fsnotify.Event
+	pending      string
+	preview      map[string]string        // last-good capture per workflow name
+	previewErrs  map[string]int           // consecutive capture failures per name
+	screenStates map[string]workflow.State // screen-detected state per workflow name
+	picker       filepicker.Model
 }
 
 // previewErrThreshold is how many consecutive capture failures we tolerate
@@ -57,12 +58,13 @@ const previewErrThreshold = 5
 
 func New(s *store.Store, svc *service.Service, defaultCwd string) Model {
 	return Model{
-		Store:       s,
-		Service:     svc,
-		DefaultCwd:  defaultCwd,
-		mode:        ModeList,
-		preview:     map[string]string{},
-		previewErrs: map[string]int{},
+		Store:        s,
+		Service:      svc,
+		DefaultCwd:   defaultCwd,
+		mode:         ModeList,
+		preview:      map[string]string{},
+		previewErrs:  map[string]int{},
+		screenStates: map[string]workflow.State{},
 	}
 }
 
@@ -81,6 +83,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case workflowsLoadedMsg:
+		// Merge any accumulated screen states into the freshly loaded items so
+		// display state isn't lost on a full reload.
+		for i, it := range msg.items {
+			if ss := m.screenStates[it.Workflow.Name]; ss != workflow.StateUnknown {
+				msg.items[i].ScreenState = ss
+			}
+		}
 		m.items = msg.items
 		restored := false
 		if m.cursorName != "" {
@@ -101,14 +110,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case fsnotifyReadyMsg:
 		m.events = msg.events
-		return m, waitForStatusCmd(m.events)
+		return m, waitForStatusCmd(m.events, m.Store)
 
 	case statusChangedMsg:
-		// Re-load to pick up the change, then wait for the next event.
-		return m, tea.Batch(
-			loadWorkflowsCmd(m.Store, m.Service),
-			waitForStatusCmd(m.events),
-		)
+		if msg.workflowName != "" && msg.loadErr == nil {
+			// Targeted update: patch just this workflow's status in-place,
+			// avoiding a full tmux reconcile round-trip on every hook event.
+			for i, it := range m.items {
+				if it.Workflow.Name == msg.workflowName {
+					m.items[i].Status = msg.status
+					m.items[i].ScreenState = m.screenStates[msg.workflowName]
+					break
+				}
+			}
+			sortItems(m.items)
+			// Restore cursor to same workflow after sort.
+			for i, it := range m.items {
+				if it.Workflow.Name == m.cursorName {
+					m.cursor = i
+					break
+				}
+			}
+		}
+		return m, waitForStatusCmd(m.events, m.Store)
 
 	case createDoneMsg:
 		m.mode = ModeList
@@ -137,6 +161,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.preview[msg.name] = msg.content
 		m.previewErrs[msg.name] = 0
+		// Update screen-detected state. When it changes, patch the item and
+		// re-sort so section order reflects the new signal.
+		if msg.screenState != m.screenStates[msg.name] {
+			m.screenStates[msg.name] = msg.screenState
+			for i, it := range m.items {
+				if it.Workflow.Name == msg.name {
+					m.items[i].ScreenState = msg.screenState
+					break
+				}
+			}
+			sortItems(m.items)
+			for i, it := range m.items {
+				if it.Workflow.Name == m.cursorName {
+					m.cursor = i
+					break
+				}
+			}
+		}
 		return m, nil
 
 	case errMsg:
@@ -463,14 +505,30 @@ func (m Model) viewListTwoCol(body, footer string) string {
 	return strings.Repeat("\n", topPad) + joinedCentered + strings.Repeat("\n", spacer) + footerCentered
 }
 
+// previewBorderColor returns the border colour for the preview pane based on
+// the selected workflow's effective state.
+func previewBorderColor(it *DisplayItem) lipgloss.Color {
+	if it == nil || it.Dormant {
+		return colorDust
+	}
+	switch it.EffectiveState() {
+	case workflow.StateAwaitingInput:
+		return colorTerracotta
+	case workflow.StateRunning:
+		return colorAmber
+	case workflow.StateIdle:
+		return colorSage
+	}
+	return colorDust
+}
+
 // renderPreview produces the bordered side-pane content for the currently
 // selected workflow, sized to fit (width × height) including the border.
 func (m Model) renderPreview(width, height int) string {
-	style := previewStyle.Width(width).Height(height)
+	it := m.selected()
+	style := previewStyle.BorderForeground(previewBorderColor(it)).Width(width).Height(height)
 	innerW := width - 4  // border (2) + horizontal padding (2)
 	innerH := height - 2 // border top/bottom
-
-	it := m.selected()
 	if it == nil {
 		return style.Render(centerText(dimStyle.Render("(no workflow selected)"), innerW, innerH))
 	}
@@ -602,7 +660,7 @@ func stateBadge(it DisplayItem) (dot string, text string) {
 	if it.Dormant {
 		return stateDormantCl.Render("○"), stateDormantCl.Render("dormant")
 	}
-	switch it.Status.State() {
+	switch it.EffectiveState() {
 	case workflow.StateRunning:
 		return stateRunning.Render("●"), stateRunning.Render("running")
 	case workflow.StateAwaitingInput:
