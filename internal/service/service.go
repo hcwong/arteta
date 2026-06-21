@@ -58,7 +58,7 @@ func (s *Service) Create(opts CreateOpts) (workflow.Workflow, error) {
 	}
 
 	sessionName := workflow.TmuxSessionName(opts.Name)
-	claudeCmd := "claude"
+	claudeCmd := claudeCommand("")
 	env := map[string]string{"ARTETA_WORKFLOW": opts.Name}
 
 	// Step 1: allocate tmux session with the requested layout.
@@ -161,10 +161,7 @@ func (s *Service) Revive(name string) error {
 	if err != nil {
 		return err
 	}
-	claudeCmd := "claude"
-	if w.ClaudeSessionID != "" {
-		claudeCmd = "claude --resume " + w.ClaudeSessionID
-	}
+	claudeCmd := claudeCommand(w.ClaudeSessionID)
 	env := map[string]string{"ARTETA_WORKFLOW": w.Name}
 	if err := tmux.BuildLayout(tmux.BuildOpts{
 		Client:    s.Tmux,
@@ -221,10 +218,7 @@ func (s *Service) RestartAll() (restarted int, err error) {
 		wg.Add(1)
 		go func(w workflow.Workflow) {
 			defer wg.Done()
-			claudeCmd := "claude"
-			if w.ClaudeSessionID != "" {
-				claudeCmd = "claude --resume " + w.ClaudeSessionID
-			}
+			claudeCmd := claudeCommand(w.ClaudeSessionID)
 			env := map[string]string{"ARTETA_WORKFLOW": w.Name}
 			results <- result{
 				name: w.Name,
@@ -245,6 +239,20 @@ func (s *Service) RestartAll() (restarted int, err error) {
 		}
 	}
 	return restarted, errors.Join(errs...)
+}
+
+// claudeCommand returns the command for pane 0: Claude (resumed when sessionID
+// is set), with an interactive login shell as a fallback when Claude exits.
+// Without this, Claude exiting would close the pane — and for a single-pane
+// layout that tears down the tmux session, making iTerm close the whole tab.
+// The `;` (not `&&`) reaches the shell on any exit code, and `exec` replaces
+// the wrapping `sh -c` so the shell becomes the pane's process.
+func claudeCommand(sessionID string) string {
+	base := "claude"
+	if sessionID != "" {
+		base = "claude --resume " + sessionID
+	}
+	return base + `; printf '\n[arteta] Claude exited — type "claude" to restart.\n'; exec ${SHELL:-/bin/sh} -l`
 }
 
 // attachCmd returns the shell command that the new iTerm tab will run to

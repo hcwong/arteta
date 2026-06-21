@@ -26,6 +26,32 @@ func newTestService(t *testing.T) (*Service, *tmux.Fake, *terminal.Fake, *store.
 	return s, tx, tm, st
 }
 
+// shellFallback is the marker the pane-0 command must carry so that, when
+// Claude exits, the pane drops to an interactive shell instead of closing
+// (which would tear down the tmux session and the iTerm tab). See plan.
+const shellFallback = "exec ${SHELL"
+
+func TestClaudeCommand(t *testing.T) {
+	got := claudeCommand("")
+	if got == "claude" {
+		t.Fatalf("claudeCommand(\"\") must not be bare %q — the pane would close on Claude exit", got)
+	}
+	if !strings.HasPrefix(got, "claude") {
+		t.Errorf("claudeCommand(\"\") should start with claude: got %q", got)
+	}
+	if !strings.Contains(got, shellFallback) {
+		t.Errorf("claudeCommand(\"\") missing shell fallback %q: got %q", shellFallback, got)
+	}
+
+	resumed := claudeCommand("abc-123")
+	if !strings.Contains(resumed, "claude --resume abc-123") {
+		t.Errorf("claudeCommand(sid) should resume: got %q", resumed)
+	}
+	if !strings.Contains(resumed, shellFallback) {
+		t.Errorf("claudeCommand(sid) missing shell fallback %q: got %q", shellFallback, resumed)
+	}
+}
+
 func TestCreate_Quad_BuildsAllPanesAndPersists(t *testing.T) {
 	s, tx, tm, st := newTestService(t)
 	w, err := s.Create(CreateOpts{
@@ -49,6 +75,9 @@ func TestCreate_Quad_BuildsAllPanesAndPersists(t *testing.T) {
 	}
 	if sess.Panes[0].Env["ARTETA_WORKFLOW"] != "auth-refactor" {
 		t.Errorf("ARTETA_WORKFLOW env not set on claude pane: %+v", sess.Panes[0].Env)
+	}
+	if !strings.Contains(sess.Panes[0].Cmd, shellFallback) {
+		t.Errorf("claude pane should keep tab alive on exit, missing %q: got %q", shellFallback, sess.Panes[0].Cmd)
 	}
 
 	tabs := tm.Tabs()
@@ -200,8 +229,8 @@ func TestRevive_NoSessionID_LaunchesFreshClaude(t *testing.T) {
 		t.Fatalf("Revive: %v", err)
 	}
 	sess := tx.Sessions()["arteta-wf"]
-	if sess.Panes[0].Cmd != "claude" {
-		t.Errorf("revive without session_id: got cmd %q, want %q", sess.Panes[0].Cmd, "claude")
+	if sess.Panes[0].Cmd != claudeCommand("") {
+		t.Errorf("revive without session_id: got cmd %q, want %q", sess.Panes[0].Cmd, claudeCommand(""))
 	}
 }
 
@@ -237,10 +266,10 @@ func TestRestartAll_LiveSessionsGetRespawned(t *testing.T) {
 		t.Errorf("RespawnPane calls: %v", tx.Calls)
 	}
 
-	// wf1 has no session ID → cmd should be plain "claude".
+	// wf1 has no session ID → cmd should be the plain-claude command.
 	sess1 := tx.Sessions()["arteta-wf1"]
-	if sess1.Panes[0].Cmd != "claude" {
-		t.Errorf("wf1 pane cmd: got %q, want %q", sess1.Panes[0].Cmd, "claude")
+	if sess1.Panes[0].Cmd != claudeCommand("") {
+		t.Errorf("wf1 pane cmd: got %q, want %q", sess1.Panes[0].Cmd, claudeCommand(""))
 	}
 
 	// wf2 has a session ID → cmd should be "claude --resume sess-abc".
