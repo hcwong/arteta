@@ -8,9 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"sort"
 	"sync"
 	"time"
 
+	"github.com/hcwong/arteta/internal/detect"
+	"github.com/hcwong/arteta/internal/reconcile"
 	"github.com/hcwong/arteta/internal/store"
 	"github.com/hcwong/arteta/internal/terminal"
 	"github.com/hcwong/arteta/internal/tmux"
@@ -108,7 +111,14 @@ func (s *Service) Open(name string) error {
 		h := terminal.TabHandle{WindowID: w.ITermTab.WindowID, TabID: w.ITermTab.TabID}
 		ok, _ := s.Term.TabExists(h)
 		if ok {
-			return s.Term.FocusTab(h)
+			if err := s.Term.FocusTab(h); err != nil {
+				return err
+			}
+			// Best-effort: record the focused workflow as the cycle anchor so
+			// `arteta next`/`prev` advance from here. A cursor-write failure
+			// must never block opening a tab.
+			_ = s.Store.SaveCycleCursor(name)
+			return nil
 		}
 	}
 	tab, err := s.Term.OpenTab(terminal.OpenOpts{
@@ -119,7 +129,11 @@ func (s *Service) Open(name string) error {
 		return fmt.Errorf("open iterm tab: %w", err)
 	}
 	w.ITermTab = &workflow.ITermTab{WindowID: tab.WindowID, TabID: tab.TabID}
-	return s.Store.SaveWorkflow(w)
+	if err := s.Store.SaveWorkflow(w); err != nil {
+		return err
+	}
+	_ = s.Store.SaveCycleCursor(name)
+	return nil
 }
 
 // Close kills the tmux session, closes the iTerm tab (if any), and
@@ -255,4 +269,110 @@ func (s *Service) now() time.Time {
 		return s.Now()
 	}
 	return time.Now().UTC()
+}
+
+// Direction selects forward or backward traversal for Cycle.
+type Direction int
+
+const (
+	DirNext Direction = iota
+	DirPrev
+)
+
+// Cycle focuses the next (or previous) workflow that needs the user's
+// attention — one whose effective state is awaiting-input or idle — without
+// returning to the homepage. Running and dormant workflows are skipped.
+//
+// Candidates are ordered the way the homepage shows them: the awaiting-input
+// group first, then the idle group, and within each group oldest-waiting
+// first (by status timestamp, name as tiebreak). The traversal anchor is the
+// persisted cycle cursor (the last workflow Arteta focused); Cycle steps one
+// position forward/backward from there, wrapping around. If the cursor is not
+// a current candidate, traversal starts at the first (next) or last (prev).
+//
+// Each live candidate's state is recomputed from a fresh pane capture blended
+// with hook state, so the cycle and homepage agree on what "awaiting" means
+// even when hook events are stale. Returns ("", StateUnknown, nil) when there
+// is nothing to cycle to.
+func (s *Service) Cycle(dir Direction) (string, workflow.State, error) {
+	ws, err := s.Store.LoadAllWorkflows()
+	if err != nil {
+		return "", workflow.StateUnknown, err
+	}
+	r, err := reconcile.Reconcile(ws, s.Tmux)
+	if err != nil {
+		return "", workflow.StateUnknown, err
+	}
+
+	type candidate struct {
+		name  string
+		state workflow.State
+		ts    time.Time
+	}
+	var cands []candidate
+	for _, w := range r.Live {
+		st, _ := s.Store.LoadStatus(w.Name)
+		screen := workflow.StateUnknown
+		if out, err := s.Tmux.CapturePane(w.TmuxSession, 0); err == nil {
+			screen, _ = detect.FromPaneContent(out)
+		}
+		eff := workflow.EffectiveState(st.State(), screen)
+		if eff == workflow.StateAwaitingInput || eff == workflow.StateIdle {
+			cands = append(cands, candidate{name: w.Name, state: eff, ts: st.Timestamp})
+		}
+	}
+	if len(cands) == 0 {
+		return "", workflow.StateUnknown, nil
+	}
+
+	sort.SliceStable(cands, func(i, j int) bool {
+		pi, pj := groupPriority(cands[i].state), groupPriority(cands[j].state)
+		if pi != pj {
+			return pi < pj
+		}
+		if !cands[i].ts.Equal(cands[j].ts) {
+			return cands[i].ts.Before(cands[j].ts)
+		}
+		return cands[i].name < cands[j].name
+	})
+
+	cursor, _ := s.Store.LoadCycleCursor()
+	idx := -1
+	for i, c := range cands {
+		if c.name == cursor {
+			idx = i
+			break
+		}
+	}
+
+	var target int
+	switch dir {
+	case DirPrev:
+		if idx < 0 {
+			target = len(cands) - 1
+		} else {
+			target = (idx - 1 + len(cands)) % len(cands)
+		}
+	default: // DirNext
+		if idx < 0 {
+			target = 0
+		} else {
+			target = (idx + 1) % len(cands)
+		}
+	}
+
+	chosen := cands[target]
+	if err := s.Open(chosen.name); err != nil {
+		return "", workflow.StateUnknown, err
+	}
+	return chosen.name, chosen.state, nil
+}
+
+// groupPriority orders the awaiting-input group ahead of the idle group,
+// matching the homepage's section order.
+func groupPriority(st workflow.State) int {
+	if st == workflow.StateAwaitingInput {
+		return 0
+	}
+	return 1
 }

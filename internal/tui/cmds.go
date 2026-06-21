@@ -252,10 +252,7 @@ type DisplayItem struct {
 // takes precedence over hook-reported state when it carries a signal, giving
 // the UI a fallback when hook events are dropped or delayed.
 func (it DisplayItem) EffectiveState() workflow.State {
-	if it.ScreenState != workflow.StateUnknown {
-		return it.ScreenState
-	}
-	return it.Status.State()
+	return workflow.EffectiveState(it.Status.State(), it.ScreenState)
 }
 
 func ensureDir(p string) error {

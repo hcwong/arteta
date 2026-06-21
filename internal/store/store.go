@@ -39,6 +39,7 @@ func (s *Store) WorkflowsDir() string  { return filepath.Join(s.root, "workflows
 func (s *Store) SessionsDir() string   { return filepath.Join(s.root, "sessions") }
 func (s *Store) ConfigPath() string    { return filepath.Join(s.root, "config.json") }
 func (s *Store) PinsPath() string      { return filepath.Join(s.root, "pins.json") }
+func (s *Store) CyclePath() string     { return filepath.Join(s.root, "cycle.json") }
 func (s *Store) workflowPath(name string) string {
 	return filepath.Join(s.WorkflowsDir(), name+".json")
 }
@@ -125,6 +126,24 @@ func (s *Store) LoadPins() ([]string, error) {
 // SavePins persists the list of pinned workflow names atomically.
 func (s *Store) SavePins(pins []string) error {
 	return writeJSONAtomic(s.PinsPath(), pins)
+}
+
+// LoadCycleCursor reads the name of the last workflow Arteta focused, used as
+// the anchor for `arteta next`/`prev`. Returns "" (no error) if absent.
+func (s *Store) LoadCycleCursor() (string, error) {
+	var name string
+	if err := readJSON(s.CyclePath(), &name); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return "", nil
+		}
+		return "", err
+	}
+	return name, nil
+}
+
+// SaveCycleCursor persists the name of the last workflow Arteta focused.
+func (s *Store) SaveCycleCursor(name string) error {
+	return writeJSONAtomic(s.CyclePath(), name)
 }
 
 // SaveStatus writes a status file for a workflow. Used by the hook subcommand.

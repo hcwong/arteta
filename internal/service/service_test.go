@@ -293,3 +293,145 @@ func containsCall(calls []string, prefix string) bool {
 	}
 	return false
 }
+
+// cycleContent maps a desired screen-detected state to canned pane output that
+// detect.FromPaneContent will classify as that state. StateUnknown yields
+// neutral content with no detectable signal (so hook state wins).
+func cycleContent(state workflow.State) string {
+	switch state {
+	case workflow.StateAwaitingInput:
+		return "╭──────────────╮\nDo you want to proceed?\n╰──────────────╯"
+	case workflow.StateIdle:
+		return "ran the build\n> "
+	default:
+		return "working on it..."
+	}
+}
+
+// setupCycleWF persists a live workflow with a tmux session, canned pane
+// content for screen detection, and a hook status with the given timestamp.
+func setupCycleWF(t *testing.T, st *store.Store, tx *tmux.Fake, name string, screen workflow.State, hookEvent string, ts time.Time) {
+	t.Helper()
+	session := workflow.TmuxSessionName(name)
+	w := workflow.Workflow{
+		Name:        name,
+		Cwd:         "/repo",
+		TmuxSession: session,
+		Layout:      workflow.LayoutSingle,
+		ITermTab:    &workflow.ITermTab{WindowID: "1", TabID: name},
+	}
+	if err := st.SaveWorkflow(w); err != nil {
+		t.Fatalf("SaveWorkflow(%s): %v", name, err)
+	}
+	if err := tx.NewSession(tmux.NewSessionOpts{Name: session, Cwd: "/repo"}); err != nil {
+		t.Fatalf("NewSession(%s): %v", session, err)
+	}
+	tx.SetPaneOutput(session, cycleContent(screen))
+	if err := st.SaveStatus(name, workflow.Status{LastEvent: hookEvent, Timestamp: ts}); err != nil {
+		t.Fatalf("SaveStatus(%s): %v", name, err)
+	}
+}
+
+func ts(hour int) time.Time {
+	return time.Date(2026, 5, 9, hour, 0, 0, 0, time.UTC)
+}
+
+// TestCycle_OrdersAndWraps verifies the candidate ordering (awaiting before
+// idle, oldest-first within group), that running/dormant are excluded, that
+// next advances + wraps, and that the cursor is persisted each step.
+func TestCycle_OrdersAndWraps(t *testing.T) {
+	s, tx, _, st := newTestService(t)
+	// wfA awaiting @10, wfB awaiting @09 (older), wfC idle @08, wfD running.
+	setupCycleWF(t, st, tx, "wfA", workflow.StateAwaitingInput, "Notification", ts(10))
+	setupCycleWF(t, st, tx, "wfB", workflow.StateAwaitingInput, "Notification", ts(9))
+	setupCycleWF(t, st, tx, "wfC", workflow.StateIdle, "Stop", ts(8))
+	setupCycleWF(t, st, tx, "wfD", workflow.StateUnknown, "UserPromptSubmit", ts(7)) // running, excluded
+
+	want := []string{"wfB", "wfA", "wfC", "wfB"} // expected sequence of next presses (wrap)
+	for i, w := range want {
+		got, _, err := s.Cycle(DirNext)
+		if err != nil {
+			t.Fatalf("Cycle press %d: %v", i, err)
+		}
+		if got != w {
+			t.Fatalf("Cycle press %d = %q, want %q", i, got, w)
+		}
+		cursor, _ := st.LoadCycleCursor()
+		if cursor != w {
+			t.Errorf("cursor after press %d = %q, want %q", i, cursor, w)
+		}
+	}
+}
+
+// TestCycle_Prev steps backward and wraps.
+func TestCycle_Prev(t *testing.T) {
+	s, tx, _, st := newTestService(t)
+	setupCycleWF(t, st, tx, "wfA", workflow.StateAwaitingInput, "Notification", ts(10))
+	setupCycleWF(t, st, tx, "wfB", workflow.StateAwaitingInput, "Notification", ts(9))
+	setupCycleWF(t, st, tx, "wfC", workflow.StateIdle, "Stop", ts(8))
+
+	// Order: wfB, wfA, wfC. Cursor empty + prev -> last (wfC).
+	want := []string{"wfC", "wfA", "wfB", "wfC"}
+	for i, w := range want {
+		got, _, err := s.Cycle(DirPrev)
+		if err != nil {
+			t.Fatalf("Cycle(prev) press %d: %v", i, err)
+		}
+		if got != w {
+			t.Fatalf("Cycle(prev) press %d = %q, want %q", i, got, w)
+		}
+	}
+}
+
+// TestCycle_StaleCursorFallsBackToFirst: when the stored cursor is not a
+// current candidate (e.g. that workflow is now running), next starts at the
+// first candidate.
+func TestCycle_StaleCursorFallsBackToFirst(t *testing.T) {
+	s, tx, _, st := newTestService(t)
+	setupCycleWF(t, st, tx, "wfA", workflow.StateAwaitingInput, "Notification", ts(10))
+	setupCycleWF(t, st, tx, "wfB", workflow.StateIdle, "Stop", ts(9))
+	if err := st.SaveCycleCursor("ghost"); err != nil {
+		t.Fatalf("SaveCycleCursor: %v", err)
+	}
+	got, state, err := s.Cycle(DirNext)
+	if err != nil {
+		t.Fatalf("Cycle: %v", err)
+	}
+	if got != "wfA" {
+		t.Errorf("Cycle with stale cursor = %q, want first candidate %q", got, "wfA")
+	}
+	if state != workflow.StateAwaitingInput {
+		t.Errorf("returned state = %v, want awaiting_input", state)
+	}
+}
+
+// TestCycle_NoCandidates returns empty without focusing anything.
+func TestCycle_NoCandidates(t *testing.T) {
+	s, tx, tm, st := newTestService(t)
+	setupCycleWF(t, st, tx, "wfA", workflow.StateUnknown, "UserPromptSubmit", ts(10)) // running
+
+	got, _, err := s.Cycle(DirNext)
+	if err != nil {
+		t.Fatalf("Cycle: %v", err)
+	}
+	if got != "" {
+		t.Errorf("Cycle with no candidates = %q, want \"\"", got)
+	}
+	if containsCall(tm.Calls, "OpenTab") || containsCall(tm.Calls, "FocusTab") {
+		t.Errorf("no tab op expected when nothing to cycle to, got: %v", tm.Calls)
+	}
+}
+
+// TestOpen_WritesCycleCursor verifies the homepage open path shares the cursor.
+func TestOpen_WritesCycleCursor(t *testing.T) {
+	s, tx, _, st := newTestService(t)
+	setupCycleWF(t, st, tx, "wfA", workflow.StateIdle, "Stop", ts(10))
+
+	if err := s.Open("wfA"); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	cursor, _ := st.LoadCycleCursor()
+	if cursor != "wfA" {
+		t.Errorf("cursor after Open = %q, want %q", cursor, "wfA")
+	}
+}

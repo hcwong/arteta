@@ -144,6 +144,17 @@ func (s Status) State() State {
 	return DeriveState(e)
 }
 
+// EffectiveState blends a hook-reported state with a screen-detected state,
+// giving screen detection precedence when it carries a signal. This is the
+// single source of truth for "what state is this workflow really in",
+// shared by the homepage and the CLI cycle command so they always agree.
+func EffectiveState(hookState, screenState State) State {
+	if screenState != StateUnknown {
+		return screenState
+	}
+	return hookState
+}
+
 var nameRE = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 const maxNameLen = 64

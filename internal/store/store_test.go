@@ -197,3 +197,26 @@ func TestStatus_DeriveState(t *testing.T) {
 		}
 	}
 }
+
+func TestCycleCursor_Roundtrip(t *testing.T) {
+	s := newTestStore(t)
+
+	got, err := s.LoadCycleCursor()
+	if err != nil {
+		t.Fatalf("LoadCycleCursor (missing): %v", err)
+	}
+	if got != "" {
+		t.Errorf("LoadCycleCursor on missing file = %q, want \"\"", got)
+	}
+
+	if err := s.SaveCycleCursor("auth-refactor"); err != nil {
+		t.Fatalf("SaveCycleCursor: %v", err)
+	}
+	got, err = s.LoadCycleCursor()
+	if err != nil {
+		t.Fatalf("LoadCycleCursor: %v", err)
+	}
+	if got != "auth-refactor" {
+		t.Errorf("LoadCycleCursor = %q, want %q", got, "auth-refactor")
+	}
+}

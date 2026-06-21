@@ -44,7 +44,39 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newCloseCmd())
 	root.AddCommand(newHookCmd())
 	root.AddCommand(newRestartCmd())
+	root.AddCommand(newCycleCmd("next", service.DirNext))
+	root.AddCommand(newCycleCmd("prev", service.DirPrev))
 	return root
+}
+
+// newCycleCmd builds the `next`/`prev` subcommands that focus the adjacent
+// workflow needing attention (awaiting input or idle), without returning to
+// the homepage. Bind these to an iTerm2 or tmux global hotkey.
+func newCycleCmd(use string, dir service.Direction) *cobra.Command {
+	verb := "next"
+	if dir == service.DirPrev {
+		verb = "previous"
+	}
+	return &cobra.Command{
+		Use:   use,
+		Short: fmt.Sprintf("Focus the %s workflow awaiting input or idle", verb),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, svc, err := buildService()
+			if err != nil {
+				return err
+			}
+			name, state, err := svc.Cycle(dir)
+			if err != nil {
+				return err
+			}
+			if name == "" {
+				fmt.Println("No workflows awaiting input or idle.")
+				return nil
+			}
+			fmt.Printf("→ %s (%s)\n", name, state)
+			return nil
+		},
+	}
 }
 
 // buildService returns a Service wired to the real adapters and a Store at

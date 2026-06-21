@@ -96,7 +96,34 @@ Most flows go through the TUI, but lifecycle ops are scriptable:
 ```sh
 arteta close <name>     # kill tmux session, close iTerm tab, delete state
 arteta doctor           # report installed hooks
+arteta next             # focus the next workflow awaiting input or idle
+arteta prev             # focus the previous one
 ```
+
+### Cycling between workflows that need you
+
+`arteta next` / `arteta prev` jump focus straight to the adjacent workflow
+that needs attention — one that's **awaiting input** (blocked on a permission
+or question) or **idle** (finished, sitting at the prompt) — without bouncing
+back to the homepage. Running and dormant workflows are skipped.
+
+Candidates are visited in homepage order: awaiting-input first, then idle,
+oldest-waiting first within each group. Each call captures the live tmux pane
+to classify state (the same signal the homepage uses), so the cycle and the
+homepage always agree. The anchor is a persisted cursor — the last workflow
+Arteta focused, including opens from the homepage — so traversal picks up
+where you left off and wraps around at the ends.
+
+Bind them to a global hotkey so you never touch the homepage. For tmux:
+
+```tmux
+# ~/.tmux.conf — prefix + n / prefix + p
+bind-key n run-shell "arteta next"
+bind-key p run-shell "arteta prev"
+```
+
+Or as an iTerm2 key binding (Preferences → Keys), send the text
+`arteta next\n` to a coprocess, or wrap it in a shell alias / Raycast script.
 
 ## How it works
 
