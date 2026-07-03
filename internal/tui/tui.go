@@ -684,7 +684,7 @@ func (m Model) viewConfirmRestart() string {
 		}
 	}
 	body := fmt.Sprintf(
-		"Restart Claude in %d live workflow%s?\n\nThis kills and respawns pane 0 with --resume.\nOther panes are preserved.\n\n[y] yes  [n] no",
+		"Restart harness in %d live workflow%s?\n\nThis kills and respawns pane 0.\nOther panes are preserved.\n\n[y] yes  [n] no",
 		liveCount, plural(liveCount),
 	)
 	return modalStyle.Render(body)
@@ -701,7 +701,7 @@ func (m Model) viewHelp() string {
 		"  p             pin / unpin workflow",
 		"  D             close workflow (with confirm)",
 		"  r             refresh",
-		"  R             restart all live workflows (Claude pane only)",
+		"  R             restart all live workflows (harness pane only)",
 		"  ?             this help",
 		"  q             quit Arteta (workflows keep running)",
 		"",

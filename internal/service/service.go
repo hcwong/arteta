@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hcwong/arteta/internal/detect"
+	"github.com/hcwong/arteta/internal/harness"
 	"github.com/hcwong/arteta/internal/reconcile"
 	"github.com/hcwong/arteta/internal/store"
 	"github.com/hcwong/arteta/internal/terminal"
@@ -36,6 +36,9 @@ type CreateOpts struct {
 	Cwd       string
 	Layout    workflow.Layout
 	GitBranch string
+	// Harness is the ID of the AI tool to run in pane 0 (e.g. "claude").
+	// Defaults to "claude" when empty.
+	Harness string
 }
 
 // Create allocates a tmux session with the requested layout, opens an
@@ -58,17 +61,18 @@ func (s *Service) Create(opts CreateOpts) (workflow.Workflow, error) {
 	}
 
 	sessionName := workflow.TmuxSessionName(opts.Name)
-	claudeCmd := claudeCommand("")
+	h := harness.Get(opts.Harness)
+	harnessCmd := h.LaunchCommand("")
 	env := map[string]string{"ARTETA_WORKFLOW": opts.Name}
 
 	// Step 1: allocate tmux session with the requested layout.
 	if err := tmux.BuildLayout(tmux.BuildOpts{
-		Client:    s.Tmux,
-		Name:      sessionName,
-		Cwd:       opts.Cwd,
-		Layout:    opts.Layout,
-		ClaudeCmd: claudeCmd,
-		Env:       env,
+		Client:     s.Tmux,
+		Name:       sessionName,
+		Cwd:        opts.Cwd,
+		Layout:     opts.Layout,
+		HarnessCmd: harnessCmd,
+		Env:        env,
 	}); err != nil {
 		return workflow.Workflow{}, fmt.Errorf("build tmux layout: %w", err)
 	}
@@ -86,6 +90,7 @@ func (s *Service) Create(opts CreateOpts) (workflow.Workflow, error) {
 		Name:        opts.Name,
 		Cwd:         opts.Cwd,
 		TmuxSession: sessionName,
+		Harness:     h.ID(),
 		GitBranch:   opts.GitBranch,
 		Layout:      opts.Layout,
 		ITermTab:    &workflow.ITermTab{WindowID: tab.WindowID, TabID: tab.TabID},
@@ -155,21 +160,22 @@ func (s *Service) Close(name string) error {
 }
 
 // Revive restarts a dormant workflow's tmux session and reopens its iTerm
-// tab. If a session_id is known, Claude is started with --resume.
+// tab. If a session_id is known, the harness is started with resume.
 func (s *Service) Revive(name string) error {
 	w, err := s.Store.LoadWorkflow(name)
 	if err != nil {
 		return err
 	}
-	claudeCmd := claudeCommand(w.ClaudeSessionID)
+	h := harness.Get(w.Harness)
+	harnessCmd := h.LaunchCommand(w.SessionID)
 	env := map[string]string{"ARTETA_WORKFLOW": w.Name}
 	if err := tmux.BuildLayout(tmux.BuildOpts{
-		Client:    s.Tmux,
-		Name:      w.TmuxSession,
-		Cwd:       w.Cwd,
-		Layout:    w.Layout,
-		ClaudeCmd: claudeCmd,
-		Env:       env,
+		Client:     s.Tmux,
+		Name:       w.TmuxSession,
+		Cwd:        w.Cwd,
+		Layout:     w.Layout,
+		HarnessCmd: harnessCmd,
+		Env:        env,
 	}); err != nil {
 		return fmt.Errorf("build tmux layout: %w", err)
 	}
@@ -185,7 +191,7 @@ func (s *Service) Revive(name string) error {
 	return s.Store.SaveWorkflow(w)
 }
 
-// RestartAll restarts pane 0 (the Claude process) in every live workflow,
+// RestartAll restarts pane 0 (the harness process) in every live workflow,
 // preserving the tmux session and all other panes. Dormant workflows are
 // skipped — they will pick up the new backend on next revive.
 // Restarts run in parallel; all errors are collected and joined.
@@ -218,11 +224,11 @@ func (s *Service) RestartAll() (restarted int, err error) {
 		wg.Add(1)
 		go func(w workflow.Workflow) {
 			defer wg.Done()
-			claudeCmd := claudeCommand(w.ClaudeSessionID)
+			harnessCmd := harness.Get(w.Harness).LaunchCommand(w.SessionID)
 			env := map[string]string{"ARTETA_WORKFLOW": w.Name}
 			results <- result{
 				name: w.Name,
-				err:  s.Tmux.RespawnPane(w.TmuxSession, 0, claudeCmd, env),
+				err:  s.Tmux.RespawnPane(w.TmuxSession, 0, harnessCmd, env),
 			}
 		}(w)
 	}
@@ -239,20 +245,6 @@ func (s *Service) RestartAll() (restarted int, err error) {
 		}
 	}
 	return restarted, errors.Join(errs...)
-}
-
-// claudeCommand returns the command for pane 0: Claude (resumed when sessionID
-// is set), with an interactive login shell as a fallback when Claude exits.
-// Without this, Claude exiting would close the pane — and for a single-pane
-// layout that tears down the tmux session, making iTerm close the whole tab.
-// The `;` (not `&&`) reaches the shell on any exit code, and `exec` replaces
-// the wrapping `sh -c` so the shell becomes the pane's process.
-func claudeCommand(sessionID string) string {
-	base := "claude"
-	if sessionID != "" {
-		base = "claude --resume " + sessionID
-	}
-	return base + `; printf '\n[arteta] Claude exited — type "claude" to restart.\n'; exec ${SHELL:-/bin/sh} -l`
 }
 
 // attachCmd returns the shell command that the new iTerm tab will run to
@@ -322,7 +314,7 @@ func (s *Service) Cycle(dir Direction) (string, workflow.State, error) {
 		st, _ := s.Store.LoadStatus(w.Name)
 		screen := workflow.StateUnknown
 		if out, err := s.Tmux.CapturePane(w.TmuxSession, 0); err == nil {
-			screen, _ = detect.FromPaneContent(out)
+			screen, _ = harness.Get(w.Harness).DetectState(out)
 		}
 		eff := workflow.EffectiveState(st.State(), screen)
 		if eff == workflow.StateAwaitingInput || eff == workflow.StateIdle {

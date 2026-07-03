@@ -84,7 +84,7 @@ func TestBuildLayout_Single(t *testing.T) {
 		Name:      "wf",
 		Cwd:       "/repo",
 		Layout:    workflow.LayoutSingle,
-		ClaudeCmd: "claude",
+		HarnessCmd: "claude",
 		Env:       map[string]string{"ARTETA_WORKFLOW": "wf"},
 	})
 	if err != nil {
@@ -107,7 +107,7 @@ func TestBuildLayout_Single(t *testing.T) {
 
 func TestBuildLayout_VSplit(t *testing.T) {
 	f := NewFake()
-	if err := BuildLayout(BuildOpts{Client: f, Name: "wf", Cwd: "/repo", Layout: workflow.LayoutVSplit, ClaudeCmd: "claude"}); err != nil {
+	if err := BuildLayout(BuildOpts{Client: f, Name: "wf", Cwd: "/repo", Layout: workflow.LayoutVSplit, HarnessCmd: "claude"}); err != nil {
 		t.Fatalf("BuildLayout: %v", err)
 	}
 	s := f.Sessions()["wf"]
@@ -125,7 +125,7 @@ func TestBuildLayout_VSplit(t *testing.T) {
 
 func TestBuildLayout_HSplit(t *testing.T) {
 	f := NewFake()
-	if err := BuildLayout(BuildOpts{Client: f, Name: "wf", Cwd: "/repo", Layout: workflow.LayoutHSplit, ClaudeCmd: "claude"}); err != nil {
+	if err := BuildLayout(BuildOpts{Client: f, Name: "wf", Cwd: "/repo", Layout: workflow.LayoutHSplit, HarnessCmd: "claude"}); err != nil {
 		t.Fatalf("BuildLayout: %v", err)
 	}
 	s := f.Sessions()["wf"]
@@ -136,7 +136,7 @@ func TestBuildLayout_HSplit(t *testing.T) {
 
 func TestBuildLayout_Quad(t *testing.T) {
 	f := NewFake()
-	if err := BuildLayout(BuildOpts{Client: f, Name: "wf", Cwd: "/repo", Layout: workflow.LayoutQuad, ClaudeCmd: "claude"}); err != nil {
+	if err := BuildLayout(BuildOpts{Client: f, Name: "wf", Cwd: "/repo", Layout: workflow.LayoutQuad, HarnessCmd: "claude"}); err != nil {
 		t.Fatalf("BuildLayout: %v", err)
 	}
 	s := f.Sessions()["wf"]

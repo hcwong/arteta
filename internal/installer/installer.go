@@ -14,15 +14,28 @@ import (
 	"time"
 )
 
-// Events lists the Claude hook events Arteta installs handlers for.
-// Order is stable (used for predictable output in Doctor reports).
+// Events is the default set of hook event names Arteta installs (Claude's
+// events). Used by the installer when no per-instance Events are set, and by
+// the doctor command when iterating installed events.
 var Events = []string{"Stop", "Notification", "UserPromptSubmit"}
 
-// Installer mutates a Claude settings.json file.
+// Installer mutates a harness settings file (Claude's JSON format).
 type Installer struct {
 	SettingsPath string
-	HookCmd      string // command prefix that identifies an Arteta entry, e.g. "arteta hook"
-	Now          func() time.Time
+	// Events overrides the package-level Events when non-empty, allowing
+	// harness-specific event lists to be injected from the harness registry.
+	Events  []string
+	HookCmd string // command prefix that identifies an Arteta entry, e.g. "arteta hook"
+	Now     func() time.Time
+}
+
+// events returns the effective event list: instance override if set, else the
+// package default.
+func (i *Installer) events() []string {
+	if len(i.Events) > 0 {
+		return i.Events
+	}
+	return Events
 }
 
 // DoctorReport describes what Arteta-managed state currently exists in settings.json.
@@ -49,7 +62,7 @@ func (i *Installer) Install() (string, error) {
 		}
 		backup = b
 	}
-	for _, ev := range Events {
+	for _, ev := range i.events() {
 		i.ensureEntry(settings, ev)
 	}
 	if err := i.writeSettings(settings); err != nil {
@@ -73,7 +86,7 @@ func (i *Installer) Uninstall() (int, string, error) {
 		return 0, "", err
 	}
 	removed := 0
-	for _, ev := range Events {
+	for _, ev := range i.events() {
 		removed += i.removeEntries(settings, ev)
 	}
 	if err := i.writeSettings(settings); err != nil {
@@ -95,7 +108,7 @@ func (i *Installer) Doctor() (DoctorReport, error) {
 	}
 	rep.Exists = existed
 	hooks, _ := settings["hooks"].(map[string]any)
-	for _, ev := range Events {
+	for _, ev := range i.events() {
 		entries, _ := hooks[ev].([]any)
 		var artetaCount, otherCount int
 		for _, e := range entries {

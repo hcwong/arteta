@@ -1,8 +1,9 @@
 // Package workflow defines Arteta's core domain types and the state machine
-// that maps Claude hook events to workflow states.
+// that maps hook events to workflow states.
 package workflow
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"time"
@@ -111,14 +112,42 @@ func ParseLayout(s string) (Layout, error) {
 
 // Workflow is the persisted shape of a single Arteta workflow.
 type Workflow struct {
-	Name            string    `json:"name"`
-	Cwd             string    `json:"cwd"`
-	TmuxSession     string    `json:"tmux_session"`
-	ClaudeSessionID string    `json:"claude_session_id,omitempty"`
-	GitBranch       string    `json:"git_branch,omitempty"`
-	Layout          Layout    `json:"layout"`
-	ITermTab        *ITermTab `json:"iterm_tab,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
+	Name      string    `json:"name"`
+	Cwd       string    `json:"cwd"`
+	TmuxSession string  `json:"tmux_session"`
+	// Harness is the ID of the AI tool running in pane 0 (e.g. "claude").
+	// Defaults to "claude" when absent for backward compatibility.
+	Harness   string    `json:"harness,omitempty"`
+	// SessionID is the harness-specific token used to resume a previous
+	// session. Formerly persisted as "claude_session_id"; the custom
+	// UnmarshalJSON migrates old files transparently.
+	SessionID string    `json:"session_id,omitempty"`
+	GitBranch string    `json:"git_branch,omitempty"`
+	Layout    Layout    `json:"layout"`
+	ITermTab  *ITermTab `json:"iterm_tab,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// UnmarshalJSON handles migration from the old "claude_session_id" field and
+// sets Harness to "claude" when the field is absent (pre-harness workflows).
+func (w *Workflow) UnmarshalJSON(data []byte) error {
+	// Use a type alias to avoid infinite recursion.
+	type raw Workflow
+	var v struct {
+		raw
+		LegacySessionID string `json:"claude_session_id,omitempty"`
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	*w = Workflow(v.raw)
+	if w.SessionID == "" && v.LegacySessionID != "" {
+		w.SessionID = v.LegacySessionID
+	}
+	if w.Harness == "" {
+		w.Harness = "claude"
+	}
+	return nil
 }
 
 // ITermTab is the persisted iTerm window/tab pointer for fast focus on reopen.
@@ -128,18 +157,37 @@ type ITermTab struct {
 }
 
 // Status is the latest hook-derived state for a workflow. Hook subprocesses
-// own writes to this shape; Arteta reads via fsnotify. State is derived on
-// demand from LastEvent rather than persisted, so the source of truth is
-// always the raw event the hook saw.
+// own writes to this shape; Arteta reads via fsnotify.
+//
+// New records store the canonical state string in StateName; LastEvent holds
+// the raw harness event name for debugging. Legacy records (pre-harness
+// abstraction) have only LastEvent — State() handles both.
 type Status struct {
-	LastEvent   string    `json:"last_event"`
+	// StateName is the canonical arteta state written by the hook handler.
+	// One of "idle", "running", "awaiting_input", or "".
+	StateName   string    `json:"state,omitempty"`
+	// LastEvent is the raw harness event name (e.g. "Stop"). Kept for
+	// debugging and as a legacy fallback for old status files.
+	LastEvent   string    `json:"last_event,omitempty"`
 	LastMessage string    `json:"last_message,omitempty"`
 	SessionID   string    `json:"session_id,omitempty"`
 	Timestamp   time.Time `json:"ts"`
 }
 
-// State derives the current State from the persisted LastEvent.
+// State returns the canonical workflow state. It checks StateName first (new
+// records), then falls back to deriving state from LastEvent (legacy records).
 func (s Status) State() State {
+	if s.StateName != "" {
+		switch s.StateName {
+		case "idle":
+			return StateIdle
+		case "running":
+			return StateRunning
+		case "awaiting_input":
+			return StateAwaitingInput
+		}
+	}
+	// Legacy path: records written before the harness abstraction.
 	e, _ := ParseEvent(s.LastEvent)
 	return DeriveState(e)
 }

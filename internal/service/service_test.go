@@ -5,11 +5,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hcwong/arteta/internal/harness"
 	"github.com/hcwong/arteta/internal/store"
 	"github.com/hcwong/arteta/internal/terminal"
 	"github.com/hcwong/arteta/internal/tmux"
 	"github.com/hcwong/arteta/internal/workflow"
 )
+
+// claudeCommand is a test helper that mirrors the Claude harness's launch
+// command, used to verify pane-0 command strings in service tests.
+func claudeCommand(sessionID string) string {
+	return harness.Get("claude").LaunchCommand(sessionID)
+}
 
 func newTestService(t *testing.T) (*Service, *tmux.Fake, *terminal.Fake, *store.Store) {
 	t.Helper()
@@ -31,6 +38,9 @@ func newTestService(t *testing.T) (*Service, *tmux.Fake, *terminal.Fake, *store.
 // (which would tear down the tmux session and the iTerm tab). See plan.
 const shellFallback = "exec ${SHELL"
 
+// TestClaudeCommand verifies the launch-command contract through the Claude
+// harness. Kept in the service package because service tests rely on the
+// claudeCommand helper below, and this test documents that contract.
 func TestClaudeCommand(t *testing.T) {
 	got := claudeCommand("")
 	if got == "claude" {
@@ -204,7 +214,7 @@ func TestRevive_ResumesClaudeSession(t *testing.T) {
 	// Simulate tmux session dying + we have a known session_id.
 	_ = tx.KillSession("arteta-wf")
 	w, _ := st.LoadWorkflow("wf")
-	w.ClaudeSessionID = "abc-123"
+	w.SessionID = "abc-123"
 	_ = st.SaveWorkflow(w)
 
 	if err := s.Revive("wf"); err != nil {
@@ -245,9 +255,9 @@ func TestRestartAll_LiveSessionsGetRespawned(t *testing.T) {
 		t.Fatalf("Create wf2: %v", err)
 	}
 
-	// Give wf2 a known ClaudeSessionID.
+	// Give wf2 a known SessionID.
 	w2, _ := st.LoadWorkflow("wf2")
-	w2.ClaudeSessionID = "sess-abc"
+	w2.SessionID = "sess-abc"
 	_ = st.SaveWorkflow(w2)
 
 	tx.Calls = nil
@@ -448,6 +458,55 @@ func TestCycle_NoCandidates(t *testing.T) {
 	}
 	if containsCall(tm.Calls, "OpenTab") || containsCall(tm.Calls, "FocusTab") {
 		t.Errorf("no tab op expected when nothing to cycle to, got: %v", tm.Calls)
+	}
+}
+
+// TestFakeHarness_Create verifies that Service.Create respects a non-Claude
+// harness ID: it writes the harness ID into the persisted workflow and launches
+// the harness's own command string in pane 0.
+func TestFakeHarness_Create(t *testing.T) {
+	// Register a temporary fake harness.
+	fakeH := &harness.Fake{
+		FakeID: "test-fake-harness",
+		FakeLaunchCmd: func(resumeID string) string {
+			if resumeID != "" {
+				return "fake --resume " + resumeID
+			}
+			return "fake-agent"
+		},
+	}
+	harness.Register(fakeH)
+
+	s, tx, _, st := newTestService(t)
+	w, err := s.Create(CreateOpts{
+		Name:    "fake-wf",
+		Cwd:     "/r",
+		Layout:  workflow.LayoutSingle,
+		Harness: "test-fake-harness",
+	})
+	if err != nil {
+		t.Fatalf("Create with fake harness: %v", err)
+	}
+	if w.Harness != "test-fake-harness" {
+		t.Errorf("Workflow.Harness: got %q, want %q", w.Harness, "test-fake-harness")
+	}
+
+	// Pane 0 must use the fake harness's command, not "claude".
+	sess := tx.Sessions()["arteta-fake-wf"]
+	if sess == nil {
+		t.Fatal("tmux session not created")
+	}
+	if sess.Panes[0].Cmd != "fake-agent" {
+		t.Errorf("pane 0 cmd: got %q, want %q", sess.Panes[0].Cmd, "fake-agent")
+	}
+
+	// Persisted workflow must record the harness ID.
+	loaded, err := st.LoadWorkflow("fake-wf")
+	if err != nil {
+		t.Fatalf("LoadWorkflow: %v", err)
+	}
+	if loaded.Harness != "test-fake-harness" {
+		t.Errorf("persisted Harness: got %q, want %q", loaded.Harness, "test-fake-harness")
 	}
 }
 

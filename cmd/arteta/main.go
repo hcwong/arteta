@@ -1,16 +1,16 @@
 // Command arteta is the entrypoint binary. With no subcommand, it launches
 // the Bubble Tea homepage. Subcommands handle install/doctor/uninstall,
-// workflow lifecycle from the CLI, and the Claude hook callbacks.
+// workflow lifecycle from the CLI, and the harness hook callbacks.
 package main
 
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/hcwong/arteta/internal/harness"
 	"github.com/hcwong/arteta/internal/hook"
 	"github.com/hcwong/arteta/internal/installer"
 	"github.com/hcwong/arteta/internal/service"
@@ -18,7 +18,6 @@ import (
 	"github.com/hcwong/arteta/internal/terminal"
 	"github.com/hcwong/arteta/internal/tmux"
 	"github.com/hcwong/arteta/internal/tui"
-	"github.com/hcwong/arteta/internal/workflow"
 )
 
 func main() {
@@ -31,7 +30,7 @@ func main() {
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "arteta",
-		Short: "Arteta — manage Claude Code sessions across iTerm tabs",
+		Short: "Arteta — manage AI coding sessions across iTerm tabs",
 		// Default action: launch the TUI.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runTUI()
@@ -115,19 +114,22 @@ func runTUI() error {
 func newInitCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "init",
-		Short: "Install Arteta hooks into Claude's settings.json",
+		Short: "Install Arteta hooks into each harness's settings file",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ins, err := defaultInstaller()
+			exe, err := os.Executable()
 			if err != nil {
-				return err
+				exe = "arteta"
 			}
-			backup, err := ins.Install()
-			if err != nil {
-				return err
-			}
-			fmt.Printf("Installed Arteta hooks into %s\n", ins.SettingsPath)
-			if backup != "" {
-				fmt.Printf("Backup: %s\n", backup)
+			for _, h := range harness.WithHooks() {
+				ins := installerFor(h, exe)
+				backup, err := ins.Install()
+				if err != nil {
+					return fmt.Errorf("%s: %w", h.DisplayName(), err)
+				}
+				fmt.Printf("Installed Arteta hooks into %s\n", ins.SettingsPath)
+				if backup != "" {
+					fmt.Printf("Backup: %s\n", backup)
+				}
 			}
 			return nil
 		},
@@ -137,19 +139,22 @@ func newInitCmd() *cobra.Command {
 func newUninstallCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "uninstall",
-		Short: "Remove Arteta hooks from Claude's settings.json",
+		Short: "Remove Arteta hooks from each harness's settings file",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ins, err := defaultInstaller()
+			exe, err := os.Executable()
 			if err != nil {
-				return err
+				exe = "arteta"
 			}
-			removed, backup, err := ins.Uninstall()
-			if err != nil {
-				return err
-			}
-			fmt.Printf("Removed %d Arteta hook entries from %s\n", removed, ins.SettingsPath)
-			if backup != "" {
-				fmt.Printf("Backup: %s\n", backup)
+			for _, h := range harness.WithHooks() {
+				ins := installerFor(h, exe)
+				removed, backup, err := ins.Uninstall()
+				if err != nil {
+					return fmt.Errorf("%s: %w", h.DisplayName(), err)
+				}
+				fmt.Printf("Removed %d Arteta hook entries from %s\n", removed, ins.SettingsPath)
+				if backup != "" {
+					fmt.Printf("Backup: %s\n", backup)
+				}
 			}
 			return nil
 		},
@@ -161,22 +166,25 @@ func newDoctorCmd() *cobra.Command {
 		Use:   "doctor",
 		Short: "Report installed Arteta hooks and detect missing pieces",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ins, err := defaultInstaller()
+			exe, err := os.Executable()
 			if err != nil {
-				return err
+				exe = "arteta"
 			}
-			rep, err := ins.Doctor()
-			if err != nil {
-				return err
-			}
-			fmt.Printf("Settings: %s (exists=%t)\n", rep.SettingsPath, rep.Exists)
-			for _, ev := range installer.Events {
-				status := "missing"
-				if rep.Found[ev] {
-					status = "installed"
+			for _, h := range harness.WithHooks() {
+				ins := installerFor(h, exe)
+				rep, err := ins.Doctor()
+				if err != nil {
+					return fmt.Errorf("%s: %w", h.DisplayName(), err)
 				}
-				other := rep.OtherCount[ev]
-				fmt.Printf("  %-18s %s  (other entries: %d)\n", ev, status, other)
+				fmt.Printf("[%s] Settings: %s (exists=%t)\n", h.DisplayName(), rep.SettingsPath, rep.Exists)
+				for _, ev := range ins.Events {
+					status := "missing"
+					if rep.Found[ev] {
+						status = "installed"
+					}
+					other := rep.OtherCount[ev]
+					fmt.Printf("  %-18s %s  (other entries: %d)\n", ev, status, other)
+				}
 			}
 			return nil
 		},
@@ -205,7 +213,7 @@ func newCloseCmd() *cobra.Command {
 func newRestartCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "restart",
-		Short: "Restart pane 0 (Claude) in all live workflows",
+		Short: "Restart pane 0 (harness) in all live workflows",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, svc, err := buildService()
 			if err != nil {
@@ -225,60 +233,57 @@ func newRestartCmd() *cobra.Command {
 	}
 }
 
+// newHookCmd builds the `arteta hook` subcommand tree. Subcommands are
+// registered dynamically from all harnesses that have a HookConfig, so adding
+// a new harness automatically exposes its events here without touching this
+// function. Duplicate subcommand names across harnesses are deduplicated.
 func newHookCmd() *cobra.Command {
 	hookCmd := &cobra.Command{
 		Use:   "hook",
-		Short: "Internal: handlers invoked by Claude Code hooks",
+		Short: "Internal: handlers invoked by AI harness hooks",
 	}
-	hookCmd.AddCommand(hookSubcmd("stop", workflow.EventStop))
-	hookCmd.AddCommand(hookSubcmd("notification", workflow.EventNotification))
-	hookCmd.AddCommand(hookSubcmd("user-prompt-submit", workflow.EventUserPromptSubmit))
+
+	seen := map[string]bool{}
+	for _, h := range harness.WithHooks() {
+		hc := h.HookConfig()
+		for _, ev := range hc.Events {
+			if seen[ev.Subcommand] {
+				continue
+			}
+			seen[ev.Subcommand] = true
+			def := ev // capture loop variable
+			hookCmd.AddCommand(&cobra.Command{
+				Use:    def.Subcommand,
+				Short:  fmt.Sprintf("Handle the %s hook event", def.RawEventName),
+				Hidden: true,
+				RunE: func(cmd *cobra.Command, args []string) error {
+					st, _, err := buildService()
+					if err != nil {
+						return err
+					}
+					h := &hook.Handler{
+						Store:  st,
+						Now:    func() time.Time { return time.Now().UTC() },
+						Lookup: os.Getenv,
+					}
+					if _, err := h.Handle(def, os.Stdin); err != nil {
+						return err
+					}
+					return nil
+				},
+			})
+		}
+	}
 	return hookCmd
 }
 
-func hookSubcmd(name string, ev workflow.Event) *cobra.Command {
-	return &cobra.Command{
-		Use:    name,
-		Short:  fmt.Sprintf("Handle the Claude %s hook event", ev.String()),
-		Hidden: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			st, _, err := buildService()
-			if err != nil {
-				return err
-			}
-			h := &hook.Handler{
-				Store:  st,
-				Now:    func() time.Time { return time.Now().UTC() },
-				Lookup: os.Getenv,
-			}
-			if _, err := h.Handle(ev, os.Stdin); err != nil {
-				return err
-			}
-			return nil
-		},
-	}
-}
-
-func defaultInstaller() (*installer.Installer, error) {
-	settingsPath, err := defaultSettingsPath()
-	if err != nil {
-		return nil, err
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		exe = "arteta"
-	}
+// installerFor builds an Installer configured from a harness's HookConfig.
+func installerFor(h harness.Harness, exe string) *installer.Installer {
+	hc := h.HookConfig()
 	return &installer.Installer{
-		SettingsPath: settingsPath,
+		SettingsPath: hc.SettingsPath,
+		Events:       harness.EventNames(hc.Events),
 		HookCmd:      exe + " hook",
 		Now:          func() time.Time { return time.Now().UTC() },
-	}, nil
-}
-
-func defaultSettingsPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("user home dir: %w", err)
 	}
-	return filepath.Join(home, ".claude", "settings.json"), nil
 }

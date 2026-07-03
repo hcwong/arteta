@@ -8,12 +8,12 @@ import (
 
 // BuildOpts configures BuildLayout.
 type BuildOpts struct {
-	Client    Client
-	Name      string // tmux session name
-	Cwd       string
-	Layout    workflow.Layout
-	ClaudeCmd string // typically "claude" or "claude --resume <sid>"
-	Env       map[string]string
+	Client     Client
+	Name       string // tmux session name
+	Cwd        string
+	Layout     workflow.Layout
+	HarnessCmd string // command for pane 0; harness-specific (e.g. "claude --resume <sid>")
+	Env        map[string]string
 }
 
 // Pane content commands per layout, hardcoded for MVP (DECISIONS.md §6).
@@ -25,10 +25,10 @@ const (
 
 // BuildLayout creates a session with the requested layout and pane content.
 // Pane order matches DECISIONS.md §6:
-//   - single: [claude]
-//   - vsplit: [claude, terminal]
-//   - hsplit: [claude, terminal]
-//   - quad:   [claude, terminal, nvim, git-diff]
+//   - single: [harness]
+//   - vsplit: [harness, terminal]
+//   - hsplit: [harness, terminal]
+//   - quad:   [harness, terminal, nvim, git-diff]
 func BuildLayout(opts BuildOpts) error {
 	if !opts.Layout.Valid() {
 		return fmt.Errorf("invalid layout %q", opts.Layout)
@@ -37,7 +37,7 @@ func BuildLayout(opts BuildOpts) error {
 	if err := c.NewSession(NewSessionOpts{
 		Name: opts.Name,
 		Cwd:  opts.Cwd,
-		Cmd:  opts.ClaudeCmd,
+		Cmd:  opts.HarnessCmd,
 		Env:  opts.Env,
 	}); err != nil {
 		return fmt.Errorf("new-session: %w", err)

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hcwong/arteta/internal/harness"
 	"github.com/hcwong/arteta/internal/store"
 	"github.com/hcwong/arteta/internal/workflow"
 )
@@ -21,16 +22,27 @@ func newTestHandler(t *testing.T, env map[string]string) (*Handler, *store.Store
 	return h, s
 }
 
+// claudeEventDef returns a harness.EventDef for the named Claude event,
+// looked up from the registered Claude harness. Panics if not found.
+func claudeEventDef(subcommand string) harness.EventDef {
+	hc := harness.Get("claude").HookConfig()
+	for _, ev := range hc.Events {
+		if ev.Subcommand == subcommand {
+			return ev
+		}
+	}
+	panic("unknown Claude subcommand: " + subcommand)
+}
+
 func TestHandle_NoArtetaWorkflow_NoOps(t *testing.T) {
 	h, s := newTestHandler(t, map[string]string{})
-	wrote, err := h.Handle(workflow.EventStop, strings.NewReader(`{"session_id":"x"}`))
+	wrote, err := h.Handle(claudeEventDef("stop"), strings.NewReader(`{"session_id":"x"}`))
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
 	if wrote {
 		t.Errorf("expected wrote=false when ARTETA_WORKFLOW unset, got true")
 	}
-	// And no status file should exist for any name.
 	if _, err := s.LoadStatus("anything"); err == nil {
 		t.Errorf("expected no status file written, got one")
 	}
@@ -39,7 +51,7 @@ func TestHandle_NoArtetaWorkflow_NoOps(t *testing.T) {
 func TestHandle_Stop_WritesIdleStatus(t *testing.T) {
 	h, s := newTestHandler(t, map[string]string{"ARTETA_WORKFLOW": "auth"})
 	payload := `{"session_id":"sid-1","cwd":"/x","hook_event_name":"Stop"}`
-	wrote, err := h.Handle(workflow.EventStop, strings.NewReader(payload))
+	wrote, err := h.Handle(claudeEventDef("stop"), strings.NewReader(payload))
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -71,7 +83,7 @@ func TestHandle_Notification_CapturesMessage(t *testing.T) {
 		"message":"Should I keep the legacy fallback?",
 		"hook_event_name":"Notification"
 	}`
-	wrote, err := h.Handle(workflow.EventNotification, strings.NewReader(payload))
+	wrote, err := h.Handle(claudeEventDef("notification"), strings.NewReader(payload))
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -93,7 +105,7 @@ func TestHandle_Notification_CapturesMessage(t *testing.T) {
 func TestHandle_UserPromptSubmit_DoesNotEchoPrompt(t *testing.T) {
 	h, s := newTestHandler(t, map[string]string{"ARTETA_WORKFLOW": "wf"})
 	payload := `{"session_id":"sid-3","prompt":"please refactor this file"}`
-	wrote, err := h.Handle(workflow.EventUserPromptSubmit, strings.NewReader(payload))
+	wrote, err := h.Handle(claudeEventDef("user-prompt-submit"), strings.NewReader(payload))
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -105,7 +117,7 @@ func TestHandle_UserPromptSubmit_DoesNotEchoPrompt(t *testing.T) {
 		t.Fatalf("LoadStatus: %v", err)
 	}
 	if st.LastMessage != "" {
-		t.Errorf("LastMessage on UserPromptSubmit should be empty (Arteta surfaces Claude's voice, not user's), got %q", st.LastMessage)
+		t.Errorf("LastMessage on UserPromptSubmit should be empty, got %q", st.LastMessage)
 	}
 	if st.State() != workflow.StateRunning {
 		t.Errorf("State: got %v, want %v", st.State(), workflow.StateRunning)
@@ -114,7 +126,7 @@ func TestHandle_UserPromptSubmit_DoesNotEchoPrompt(t *testing.T) {
 
 func TestHandle_BadJSON_Errors(t *testing.T) {
 	h, _ := newTestHandler(t, map[string]string{"ARTETA_WORKFLOW": "wf"})
-	_, err := h.Handle(workflow.EventStop, strings.NewReader("{not json"))
+	_, err := h.Handle(claudeEventDef("stop"), strings.NewReader("{not json"))
 	if err == nil {
 		t.Error("expected error on malformed JSON, got nil")
 	}
@@ -124,7 +136,7 @@ func TestHandle_TruncatesLongMessage(t *testing.T) {
 	h, s := newTestHandler(t, map[string]string{"ARTETA_WORKFLOW": "wf"})
 	long := strings.Repeat("x", 1000)
 	payload := `{"session_id":"sid","message":"` + long + `"}`
-	if _, err := h.Handle(workflow.EventNotification, strings.NewReader(payload)); err != nil {
+	if _, err := h.Handle(claudeEventDef("notification"), strings.NewReader(payload)); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
 	st, err := s.LoadStatus("wf")

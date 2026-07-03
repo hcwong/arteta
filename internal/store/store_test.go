@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -20,7 +21,7 @@ func sampleWorkflow(name string) workflow.Workflow {
 		Name:            name,
 		Cwd:             "/Users/josh/repo",
 		TmuxSession:     workflow.TmuxSessionName(name),
-		ClaudeSessionID: "abc-123",
+		SessionID: "abc-123",
 		GitBranch:       "feat/x",
 		Layout:          workflow.LayoutQuad,
 		ITermTab:        &workflow.ITermTab{WindowID: "w1", TabID: "t1"},
@@ -197,6 +198,81 @@ func TestStatus_DeriveState(t *testing.T) {
 		}
 	}
 }
+
+// --- Migration tests ---
+
+// TestWorkflowMigration_LegacySessionID verifies that a workflow JSON written
+// before the harness abstraction (using "claude_session_id") loads correctly
+// and makes the session ID available via the new SessionID field.
+func TestWorkflowMigration_LegacySessionID(t *testing.T) {
+	s := newTestStore(t)
+	if err := os.MkdirAll(s.WorkflowsDir(), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Write a pre-migration workflow JSON by hand.
+	old := map[string]any{
+		"name":              "auth",
+		"cwd":               "/repo",
+		"tmux_session":      "arteta-auth",
+		"claude_session_id": "legacy-sid-abc",
+		"layout":            "single",
+		"created_at":        "2026-01-01T00:00:00Z",
+	}
+	data, _ := json.MarshalIndent(old, "", "  ")
+	if err := os.WriteFile(filepath.Join(s.WorkflowsDir(), "auth.json"), data, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	w, err := s.LoadWorkflow("auth")
+	if err != nil {
+		t.Fatalf("LoadWorkflow: %v", err)
+	}
+	if w.SessionID != "legacy-sid-abc" {
+		t.Errorf("SessionID after migration: got %q, want %q", w.SessionID, "legacy-sid-abc")
+	}
+	if w.Harness != "claude" {
+		t.Errorf("Harness after migration: got %q, want %q", w.Harness, "claude")
+	}
+}
+
+// TestStatusMigration_LegacyLastEvent verifies that old status files (with
+// only "last_event", no "state" field) still derive state correctly via the
+// legacy ParseEvent/DeriveState fallback path.
+func TestStatusMigration_LegacyLastEvent(t *testing.T) {
+	s := newTestStore(t)
+	if err := os.MkdirAll(s.SessionsDir(), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	cases := []struct {
+		lastEvent string
+		want      workflow.State
+	}{
+		{"Stop", workflow.StateIdle},
+		{"Notification", workflow.StateAwaitingInput},
+		{"UserPromptSubmit", workflow.StateRunning},
+		{"", workflow.StateUnknown},
+	}
+	for _, tc := range cases {
+		old := map[string]any{
+			"last_event": tc.lastEvent,
+			"ts":         "2026-01-01T00:00:00Z",
+		}
+		data, _ := json.MarshalIndent(old, "", "  ")
+		if err := os.WriteFile(filepath.Join(s.SessionsDir(), "wf.json"), data, 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		st, err := s.LoadStatus("wf")
+		if err != nil {
+			t.Fatalf("LoadStatus (last_event=%q): %v", tc.lastEvent, err)
+		}
+		if got := st.State(); got != tc.want {
+			t.Errorf("legacy last_event=%q → State() = %v, want %v", tc.lastEvent, got, tc.want)
+		}
+	}
+}
+
 
 func TestCycleCursor_Roundtrip(t *testing.T) {
 	s := newTestStore(t)
