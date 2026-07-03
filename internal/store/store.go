@@ -38,8 +38,9 @@ func (s *Store) Root() string          { return s.root }
 func (s *Store) WorkflowsDir() string  { return filepath.Join(s.root, "workflows") }
 func (s *Store) SessionsDir() string   { return filepath.Join(s.root, "sessions") }
 func (s *Store) ConfigPath() string    { return filepath.Join(s.root, "config.json") }
-func (s *Store) PinsPath() string      { return filepath.Join(s.root, "pins.json") }
-func (s *Store) CyclePath() string     { return filepath.Join(s.root, "cycle.json") }
+func (s *Store) PinsPath() string        { return filepath.Join(s.root, "pins.json") }
+func (s *Store) CyclePath() string      { return filepath.Join(s.root, "cycle.json") }
+func (s *Store) FavoritesPath() string  { return filepath.Join(s.root, "favorites.json") }
 func (s *Store) workflowPath(name string) string {
 	return filepath.Join(s.WorkflowsDir(), name+".json")
 }
@@ -144,6 +145,23 @@ func (s *Store) LoadCycleCursor() (string, error) {
 // SaveCycleCursor persists the name of the last workflow Arteta focused.
 func (s *Store) SaveCycleCursor(name string) error {
 	return writeJSONAtomic(s.CyclePath(), name)
+}
+
+// LoadFavorites reads the list of favourite project paths. Returns nil if no favorites file exists.
+func (s *Store) LoadFavorites() ([]string, error) {
+	var paths []string
+	if err := readJSON(s.FavoritesPath(), &paths); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return paths, nil
+}
+
+// SaveFavorites persists the list of favourite project paths atomically.
+func (s *Store) SaveFavorites(paths []string) error {
+	return writeJSONAtomic(s.FavoritesPath(), paths)
 }
 
 // SaveStatus writes a status file for a workflow. Used by the hook subcommand.

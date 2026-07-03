@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -160,7 +161,7 @@ func (f CreateForm) View() string {
 
 	hint := "[Tab/↑↓] field   [←→] layout   [⏎] create   [Esc] cancel"
 	if f.Focus == 1 {
-		hint = "[Tab] browse dirs   [↑↓] field   [←→] layout   [⏎] create   [Esc] cancel"
+		hint = "[Tab] browse dirs   [ctrl+f] favourites   [↑↓] field   [⏎] create   [Esc] cancel"
 	}
 	b.WriteString(helpStyle.Render(hint))
 
@@ -191,6 +192,35 @@ func prevLayout(l workflow.Layout) workflow.Layout {
 		}
 	}
 	return allLayouts[0]
+}
+
+// newCreateFormFromFavorite builds a create form pre-filled with a favourite
+// path. The Cwd is set to path; the Name field is pre-populated with a
+// suggested name derived from the path's base directory. Focus starts on the
+// Name field so the user can accept or change it.
+func newCreateFormFromFavorite(path string) CreateForm {
+	f := newCreateForm(path)
+	f.NameInput.SetValue(suggestName(path))
+	return f
+}
+
+// suggestName derives a workflow name from a directory path by taking the
+// base name and stripping characters that workflow.ValidateName rejects.
+func suggestName(path string) string {
+	base := filepath.Base(path)
+	var b strings.Builder
+	for _, r := range base {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+			b.WriteRune(r)
+		} else if r == '.' || r == ' ' {
+			b.WriteRune('-')
+		}
+	}
+	result := strings.Trim(b.String(), "-_")
+	if err := workflow.ValidateName(result); err != nil {
+		return ""
+	}
+	return result
 }
 
 // Center returns s centred in a w×h area for modal presentation.

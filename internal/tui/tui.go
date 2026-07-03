@@ -26,6 +26,7 @@ const (
 	ModeHelp
 	ModeConfirmRestart
 	ModeFilePicker
+	ModeFavorites
 )
 
 // Model is the root Bubble Tea model.
@@ -48,6 +49,7 @@ type Model struct {
 	previewErrs  map[string]int           // consecutive capture failures per name
 	screenStates map[string]workflow.State // screen-detected state per workflow name
 	picker       filepicker.Model
+	favorites    FavoritesPicker
 }
 
 // previewErrThreshold is how many consecutive capture failures we tolerate
@@ -204,6 +206,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case ModeFilePicker:
 			return m.updateFilePicker(msg)
+		case ModeFavorites:
+			return m.updateFavorites(msg)
 		}
 	}
 
@@ -263,6 +267,22 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursorName = name
 			return m, loadWorkflowsCmd(m.Store, m.Service)
 		}
+	case "f":
+		favs, err := m.Store.LoadFavorites()
+		if err != nil {
+			m.err = err
+			return m, nil
+		}
+		m.favorites = newFavoritesPicker(favs, false)
+		m.mode = ModeFavorites
+		return m, nil
+	case "F":
+		if it := m.selected(); it != nil && it.Workflow.Cwd != "" {
+			if err := m.addFavorite(it.Workflow.Cwd); err != nil {
+				m.err = err
+				return m, nil
+			}
+		}
 	case "R":
 		hasLive := false
 		for _, it := range m.items {
@@ -300,6 +320,16 @@ func (m Model) captureSelectedCmd() tea.Cmd {
 }
 
 func (m Model) updateCreate(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if k, ok := msg.(tea.KeyMsg); ok && k.String() == "ctrl+f" && m.create.Focus == 1 {
+		favs, err := m.Store.LoadFavorites()
+		if err != nil {
+			m.err = err
+			return m, nil
+		}
+		m.favorites = newFavoritesPicker(favs, true)
+		m.mode = ModeFavorites
+		return m, nil
+	}
 	form, cmd, submitted, cancelled := m.create.Update(msg)
 	m.create = form
 	if cancelled {
@@ -396,6 +426,67 @@ func (m Model) togglePin(name string) error {
 	return m.Store.SavePins(append(pins, name))
 }
 
+func (m Model) addFavorite(path string) error {
+	favs, err := m.Store.LoadFavorites()
+	if err != nil {
+		return err
+	}
+	for _, f := range favs {
+		if f == path {
+			return nil
+		}
+	}
+	return m.Store.SaveFavorites(append(favs, path))
+}
+
+func (m Model) updateFavorites(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	picker, selected, deleteIdx, cancelled := m.favorites.Update(msg)
+	m.favorites = picker
+
+	if cancelled {
+		if m.favorites.fromForm {
+			m.mode = ModeCreate
+		} else {
+			m.mode = ModeList
+		}
+		return m, nil
+	}
+
+	if deleteIdx >= 0 {
+		favs, err := m.Store.LoadFavorites()
+		if err != nil {
+			m.err = err
+			return m, nil
+		}
+		if deleteIdx < len(favs) {
+			favs = append(favs[:deleteIdx], favs[deleteIdx+1:]...)
+		}
+		if err := m.Store.SaveFavorites(favs); err != nil {
+			m.err = err
+			return m, nil
+		}
+		if m.favorites.Cursor >= len(favs) && m.favorites.Cursor > 0 {
+			m.favorites.Cursor = len(favs) - 1
+		}
+		m.favorites.Paths = favs
+		return m, nil
+	}
+
+	if selected != "" {
+		if m.favorites.fromForm {
+			m.create.CwdInput.SetValue(selected)
+			m.create.Focus = 1
+			m.create.CwdInput.Focus()
+			m.create.NameInput.Blur()
+		} else {
+			m.create = newCreateFormFromFavorite(selected)
+		}
+		m.mode = ModeCreate
+	}
+
+	return m, nil
+}
+
 func (m Model) selected() *DisplayItem {
 	if m.cursor < 0 || m.cursor >= len(m.items) {
 		return nil
@@ -415,6 +506,8 @@ func (m Model) View() string {
 		return center(m.viewHelp(), m.width, m.height)
 	case ModeFilePicker:
 		return center(m.viewFilePicker(), m.width, m.height)
+	case ModeFavorites:
+		return center(m.favorites.View(), m.width, m.height)
 	}
 	return m.viewList()
 }
@@ -603,7 +696,7 @@ func (m Model) renderListBody() string {
 }
 
 func (m Model) renderListFooter() string {
-	footer := helpStyle.Render("j/k move  ⏎ open  n new  p pin  D close  r refresh  R restart all  ? help  q quit")
+	footer := helpStyle.Render("j/k move  ⏎ open  n new  p pin  f favs  F add fav  D close  r refresh  R restart all  ? help  q quit")
 	if m.err != nil {
 		footer = errorStyle.Render("error: "+m.err.Error()) + "\n" + footer
 	}
@@ -699,6 +792,8 @@ func (m Model) viewHelp() string {
 		"  ⏎             open selected workflow (or revive if dormant)",
 		"  n             new workflow",
 		"  p             pin / unpin workflow",
+		"  f             open favourites",
+		"  F             add selected workflow's path to favourites",
 		"  D             close workflow (with confirm)",
 		"  r             refresh",
 		"  R             restart all live workflows (harness pane only)",

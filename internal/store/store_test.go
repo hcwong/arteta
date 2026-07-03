@@ -296,3 +296,34 @@ func TestCycleCursor_Roundtrip(t *testing.T) {
 		t.Errorf("LoadCycleCursor = %q, want %q", got, "auth-refactor")
 	}
 }
+
+func TestSaveAndLoadFavorites_Roundtrip(t *testing.T) {
+	s := newTestStore(t)
+	in := []string{"/home/user/project-a", "/home/user/project-b"}
+	if err := s.SaveFavorites(in); err != nil {
+		t.Fatalf("SaveFavorites: %v", err)
+	}
+	got, err := s.LoadFavorites()
+	if err != nil {
+		t.Fatalf("LoadFavorites: %v", err)
+	}
+	if len(got) != len(in) {
+		t.Fatalf("LoadFavorites: got %d paths, want %d", len(got), len(in))
+	}
+	for i, p := range in {
+		if got[i] != p {
+			t.Errorf("LoadFavorites[%d] = %q, want %q", i, got[i], p)
+		}
+	}
+}
+
+func TestLoadFavorites_NotFound(t *testing.T) {
+	s := newTestStore(t)
+	got, err := s.LoadFavorites()
+	if err != nil {
+		t.Fatalf("LoadFavorites on missing file: %v", err)
+	}
+	if got != nil {
+		t.Errorf("LoadFavorites on missing file = %v, want nil", got)
+	}
+}
