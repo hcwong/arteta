@@ -75,6 +75,24 @@ func TestFromPaneContent_IdlePromptWithBlankLines(t *testing.T) {
 	}
 }
 
+func TestFromPaneContent_BoxCharsAboveIdlePrompt(t *testing.T) {
+	// Box-drawing chars from previous tool output should not override the idle
+	// prompt when Claude is sitting at "> ".
+	content := `previous output
+╭──────────────────────────╮
+│ Bash(command="ls -la")   │
+╰──────────────────────────╯
+some more output
+> `
+	state, ok := FromPaneContent(content)
+	if !ok {
+		t.Fatal("expected confident result, got ok=false")
+	}
+	if state != workflow.StateIdle {
+		t.Errorf("got %v, want StateIdle (prompt visible despite old box chars)", state)
+	}
+}
+
 func TestFromPaneContent_TailOnly(t *testing.T) {
 	// Box appears only in the tail; many lines of output above it.
 	var lines []string

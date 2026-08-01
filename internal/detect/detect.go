@@ -28,19 +28,21 @@ func FromPaneContent(content string) (workflow.State, bool) {
 }
 
 func detectState(lines []string) (workflow.State, bool) {
+	// Idle prompt check first: "> " at the last non-blank line means Claude
+	// finished and is waiting for the next user message. This must run before
+	// the box-drawing check because previous tool-result borders (╭/╰) can
+	// linger in the tail while the prompt is already visible.
+	if last := lastNonBlank(lines); strings.HasSuffix(last, "> ") {
+		return workflow.StateIdle, true
+	}
+
 	joined := strings.Join(lines, "\n")
 
 	// Box-drawing borders: Claude Code renders permission/confirmation dialogs
-	// using ╭─…╮ top and ╰─…╯ bottom. Both appearing near the bottom strongly
-	// signals a blocking dialog waiting for approval.
+	// using ╭─…╮ top and ╰─…╯ bottom. Both appearing near the bottom without
+	// an idle prompt signals a blocking dialog waiting for approval.
 	if strings.Contains(joined, "╭") && strings.Contains(joined, "╰") {
 		return workflow.StateAwaitingInput, true
-	}
-
-	// Input cursor: Claude's "> " prompt at the last non-blank line means
-	// Claude finished and is idle, waiting for the next user message.
-	if last := lastNonBlank(lines); strings.HasSuffix(last, "> ") {
-		return workflow.StateIdle, true
 	}
 
 	return workflow.StateUnknown, false
