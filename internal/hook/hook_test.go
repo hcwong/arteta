@@ -97,8 +97,8 @@ func TestHandle_Notification_CapturesMessage(t *testing.T) {
 	if st.LastMessage != "Should I keep the legacy fallback?" {
 		t.Errorf("LastMessage: got %q", st.LastMessage)
 	}
-	if st.State() != workflow.StateAwaitingInput {
-		t.Errorf("State: got %v, want %v", st.State(), workflow.StateAwaitingInput)
+	if st.State() != workflow.StateIdle {
+		t.Errorf("State: got %v, want %v", st.State(), workflow.StateIdle)
 	}
 }
 

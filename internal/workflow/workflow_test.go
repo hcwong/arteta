@@ -11,7 +11,7 @@ func TestDeriveState(t *testing.T) {
 		want  State
 	}{
 		{EventUserPromptSubmit, StateRunning},
-		{EventNotification, StateAwaitingInput},
+		{EventNotification, StateIdle},
 		{EventStop, StateIdle},
 		{EventNone, StateUnknown},
 	}

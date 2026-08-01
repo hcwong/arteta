@@ -75,7 +75,7 @@ func TestClaudeHarness_HookConfig(t *testing.T) {
 
 	wantStates := map[string]workflow.State{
 		"stop":               workflow.StateIdle,
-		"notification":       workflow.StateAwaitingInput,
+		"notification":       workflow.StateIdle,
 		"user-prompt-submit": workflow.StateRunning,
 	}
 	if len(hc.Events) != len(wantStates) {

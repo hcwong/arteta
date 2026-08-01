@@ -439,10 +439,16 @@ func TestSectionOf(t *testing.T) {
 			wantLabel:    "dormant",
 		},
 		{
-			name:         "awaiting input",
-			item:         DisplayItem{Status: workflow.Status{LastEvent: "Notification"}},
+			name:         "awaiting input via screen detection",
+			item:         DisplayItem{ScreenState: workflow.StateAwaitingInput},
 			wantPriority: 1,
 			wantLabel:    "awaiting input",
+		},
+		{
+			name:         "notification without screen signal is idle",
+			item:         DisplayItem{Status: workflow.Status{LastEvent: "Notification"}},
+			wantPriority: 3,
+			wantLabel:    "idle",
 		},
 		{
 			name:         "running",
@@ -485,7 +491,7 @@ func TestSortOrder_SectionOf(t *testing.T) {
 		{Workflow: workflow.Workflow{Name: "d"}, Dormant: true},                                // priority 4
 		{Workflow: workflow.Workflow{Name: "i"}, Status: workflow.Status{LastEvent: "Stop"}},   // priority 3
 		{Workflow: workflow.Workflow{Name: "r"}, Status: workflow.Status{LastEvent: "UserPromptSubmit"}}, // priority 2
-		{Workflow: workflow.Workflow{Name: "a"}, Status: workflow.Status{LastEvent: "Notification"}},     // priority 1
+		{Workflow: workflow.Workflow{Name: "a"}, ScreenState: workflow.StateAwaitingInput},                 // priority 1
 		{Workflow: workflow.Workflow{Name: "p"}, Pinned: true},                                 // priority 0
 	}
 
@@ -521,7 +527,7 @@ func TestRenderListBody_SectionHeaders(t *testing.T) {
 
 	// Items spanning three different sections: awaiting input, running, idle.
 	updated, _ := m.Update(workflowsLoadedMsg{items: []DisplayItem{
-		{Workflow: workflow.Workflow{Name: "a1"}, Status: workflow.Status{LastEvent: "Notification"}},
+		{Workflow: workflow.Workflow{Name: "a1"}, ScreenState: workflow.StateAwaitingInput},
 		{Workflow: workflow.Workflow{Name: "r1"}, Status: workflow.Status{LastEvent: "UserPromptSubmit"}},
 		{Workflow: workflow.Workflow{Name: "i1"}, Status: workflow.Status{LastEvent: "Stop"}},
 	}})
@@ -540,7 +546,7 @@ func TestRenderListBody_EmptySectionProducesNoHeader(t *testing.T) {
 
 	// Only awaiting-input and idle items — no running items.
 	updated, _ := m.Update(workflowsLoadedMsg{items: []DisplayItem{
-		{Workflow: workflow.Workflow{Name: "a1"}, Status: workflow.Status{LastEvent: "Notification"}},
+		{Workflow: workflow.Workflow{Name: "a1"}, ScreenState: workflow.StateAwaitingInput},
 		{Workflow: workflow.Workflow{Name: "i1"}, Status: workflow.Status{LastEvent: "Stop"}},
 	}})
 	m = updated.(Model)

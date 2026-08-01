@@ -75,7 +75,7 @@ func DeriveState(e Event) State {
 	case EventUserPromptSubmit:
 		return StateRunning
 	case EventNotification:
-		return StateAwaitingInput
+		return StateIdle
 	case EventStop:
 		return StateIdle
 	default:

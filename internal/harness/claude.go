@@ -41,7 +41,7 @@ func (c claudeHarness) HookConfig() *HookConfig {
 			{
 				RawEventName:   "Notification",
 				Subcommand:     "notification",
-				State:          workflow.StateAwaitingInput,
+				State:          workflow.StateIdle,
 				CaptureMessage: true,
 				ParsePayload:   ClaudeParsePayload,
 			},

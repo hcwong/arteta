@@ -187,7 +187,7 @@ func TestStatus_DeriveState(t *testing.T) {
 		want  workflow.State
 	}{
 		{"Stop", workflow.StateIdle},
-		{"Notification", workflow.StateAwaitingInput},
+		{"Notification", workflow.StateIdle},
 		{"UserPromptSubmit", workflow.StateRunning},
 		{"", workflow.StateUnknown},
 	}
@@ -250,7 +250,7 @@ func TestStatusMigration_LegacyLastEvent(t *testing.T) {
 		want      workflow.State
 	}{
 		{"Stop", workflow.StateIdle},
-		{"Notification", workflow.StateAwaitingInput},
+		{"Notification", workflow.StateIdle},
 		{"UserPromptSubmit", workflow.StateRunning},
 		{"", workflow.StateUnknown},
 	}
