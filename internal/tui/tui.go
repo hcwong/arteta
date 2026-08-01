@@ -27,6 +27,7 @@ const (
 	ModeConfirmRestart
 	ModeFilePicker
 	ModeFavorites
+	ModeWorktreePicker
 )
 
 // Model is the root Bubble Tea model.
@@ -48,8 +49,11 @@ type Model struct {
 	preview      map[string]string        // last-good capture per workflow name
 	previewErrs  map[string]int           // consecutive capture failures per name
 	screenStates map[string]workflow.State // screen-detected state per workflow name
-	picker       filepicker.Model
-	favorites    FavoritesPicker
+	picker          filepicker.Model
+	favorites       FavoritesPicker
+	worktreePicker  WorktreePicker
+	pendingAdvisory *service.RemovalAdvisory
+	deleteScope     service.RemovalScope
 }
 
 // previewErrThreshold is how many consecutive capture failures we tolerate
@@ -208,6 +212,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateFilePicker(msg)
 		case ModeFavorites:
 			return m.updateFavorites(msg)
+		case ModeWorktreePicker:
+			return m.updateWorktreePicker(msg)
 		}
 	}
 
@@ -255,6 +261,16 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "D":
 		if it := m.selected(); it != nil {
 			m.pending = it.Workflow.Name
+			m.deleteScope = service.RemoveWorkflowOnly
+			if it.Workflow.WorktreePath != "" {
+				adv, err := m.Service.RemovalAdvisory(it.Workflow.Name)
+				if err == nil {
+					m.pendingAdvisory = &adv
+					m.deleteScope = adv.Default
+				}
+			} else {
+				m.pendingAdvisory = nil
+			}
 			m.mode = ModeConfirmDelete
 		}
 	case "p":
@@ -353,10 +369,25 @@ func (m Model) updateCreate(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.picker.Init()
 	}
 	if submitted {
+		cwd := strings.TrimSpace(m.create.CwdInput.Value())
+
+		if !m.create.WorktreeMode && m.Service.Git != nil && m.Service.Git.IsGitRepo() {
+			wts, err := m.Service.ListRepoWorktrees(cwd)
+			if err == nil {
+				m.worktreePicker = newWorktreePicker(wts)
+				m.mode = ModeWorktreePicker
+				return m, nil
+			}
+		}
+
 		opts := service.CreateOpts{
-			Name:   strings.TrimSpace(m.create.NameInput.Value()),
-			Cwd:    strings.TrimSpace(m.create.CwdInput.Value()),
-			Layout: m.create.Layout,
+			Name:           strings.TrimSpace(m.create.NameInput.Value()),
+			Cwd:            cwd,
+			Layout:         m.create.Layout,
+			WorktreeMode:   m.create.WorktreeMode,
+			WorktreeRepo:   m.create.WorktreeRepo,
+			AttachWorktree: m.create.AttachWorktree,
+			GitBranch:      strings.TrimSpace(m.create.BranchInput.Value()),
 		}
 		return m, createCmd(m.Service, opts)
 	}
@@ -403,12 +434,23 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y", "enter":
 		name := m.pending
+		scope := m.deleteScope
 		m.pending = ""
+		m.pendingAdvisory = nil
 		m.mode = ModeList
-		return m, closeCmd(m.Service, name)
+		return m, closeWithScopeCmd(m.Service, name, scope)
 	case "n", "N", "esc", "q":
 		m.pending = ""
+		m.pendingAdvisory = nil
 		m.mode = ModeList
+	case "left", "right":
+		if m.pendingAdvisory != nil {
+			if m.deleteScope == service.RemoveWorkflowOnly {
+				m.deleteScope = service.RemoveWorkflowAndWorktree
+			} else {
+				m.deleteScope = service.RemoveWorkflowOnly
+			}
+		}
 	}
 	return m, nil
 }
@@ -487,6 +529,57 @@ func (m Model) updateFavorites(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) updateWorktreePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	picker, selected, cancelled := m.worktreePicker.Update(msg)
+	m.worktreePicker = picker
+
+	if cancelled {
+		m.mode = ModeCreate
+		return m, nil
+	}
+
+	if selected != nil {
+		cwd := strings.TrimSpace(m.create.CwdInput.Value())
+		if selected.IsSkip {
+			m.create.WorktreeMode = false
+			m.mode = ModeCreate
+			// Re-submit the form by calling createCmd directly.
+			opts := service.CreateOpts{
+				Name:   strings.TrimSpace(m.create.NameInput.Value()),
+				Cwd:    cwd,
+				Layout: m.create.Layout,
+			}
+			return m, createCmd(m.Service, opts)
+		}
+		if selected.IsCreate {
+			m.create.WorktreeMode = true
+			m.create.WorktreeRepo = cwd
+			m.create.ShowBranch = true
+			name := strings.TrimSpace(m.create.NameInput.Value())
+			m.create.BranchInput.SetValue(name)
+			m.create.Focus = 3
+			m.create.applyFocus()
+			m.mode = ModeCreate
+			return m, nil
+		}
+		// Attach to existing worktree.
+		m.create.WorktreeMode = true
+		m.create.WorktreeRepo = cwd
+		m.create.AttachWorktree = selected.Path
+		opts := service.CreateOpts{
+			Name:           strings.TrimSpace(m.create.NameInput.Value()),
+			Cwd:            cwd,
+			Layout:         m.create.Layout,
+			WorktreeMode:   true,
+			WorktreeRepo:   cwd,
+			AttachWorktree: selected.Path,
+		}
+		return m, createCmd(m.Service, opts)
+	}
+
+	return m, nil
+}
+
 func (m Model) selected() *DisplayItem {
 	if m.cursor < 0 || m.cursor >= len(m.items) {
 		return nil
@@ -508,6 +601,8 @@ func (m Model) View() string {
 		return center(m.viewFilePicker(), m.width, m.height)
 	case ModeFavorites:
 		return center(m.favorites.View(), m.width, m.height)
+	case ModeWorktreePicker:
+		return center(m.worktreePicker.View(), m.width, m.height)
 	}
 	return m.viewList()
 }
@@ -765,8 +860,34 @@ func stateBadge(it DisplayItem) (dot string, text string) {
 }
 
 func (m Model) viewConfirm() string {
-	body := fmt.Sprintf("Close workflow %q?\n\nThis kills its tmux session and iTerm tab.\n\n[y] yes  [n] no", m.pending)
-	return modalStyle.Render(body)
+	if m.pendingAdvisory == nil {
+		body := fmt.Sprintf("Close workflow %q?\n\nThis kills its tmux session and iTerm tab.\n\n[y] yes  [n] no", m.pending)
+		return modalStyle.Render(body)
+	}
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("Close workflow %q?\n\n", m.pending))
+
+	if m.pendingAdvisory.Reason != "" {
+		b.WriteString(errorStyle.Render("Warning: "+m.pendingAdvisory.Reason) + "\n\n")
+	}
+
+	optWF := "( ) Workflow only"
+	optWT := "( ) Workflow + worktree + branch"
+	if m.deleteScope == service.RemoveWorkflowOnly {
+		optWF = "(•) Workflow only"
+	} else {
+		optWT = "(•) Workflow + worktree + branch"
+	}
+	if m.deleteScope == service.RemoveWorkflowOnly {
+		optWF = selectedStyle.Render(optWF)
+	} else {
+		optWT = selectedStyle.Render(optWT)
+	}
+	b.WriteString("  " + optWF + "\n")
+	b.WriteString("  " + optWT + "\n\n")
+	b.WriteString(helpStyle.Render("[←→] toggle   [y/⏎] confirm   [n/Esc] cancel"))
+	return modalStyle.Render(b.String())
 }
 
 func (m Model) viewConfirmRestart() string {

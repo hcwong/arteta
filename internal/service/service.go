@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hcwong/arteta/internal/git"
 	"github.com/hcwong/arteta/internal/harness"
 	"github.com/hcwong/arteta/internal/reconcile"
 	"github.com/hcwong/arteta/internal/store"
@@ -26,6 +27,7 @@ type Service struct {
 	Store *store.Store
 	Tmux  tmux.Client
 	Term  terminal.Adapter
+	Git   git.Client
 	Now   func() time.Time
 	// SocketName is the tmux socket Arteta uses; defaults to tmux.DefaultSocket.
 	SocketName string
@@ -40,6 +42,10 @@ type CreateOpts struct {
 	// Harness is the ID of the AI tool to run in pane 0 (e.g. "claude").
 	// Defaults to "claude" when empty.
 	Harness string
+	// Worktree fields (ignored when WorktreeMode is false).
+	WorktreeMode   bool
+	WorktreeRepo   string
+	AttachWorktree string
 }
 
 // Create allocates a tmux session with the requested layout, opens an
@@ -61,9 +67,43 @@ func (s *Service) Create(opts CreateOpts) (workflow.Workflow, error) {
 		return workflow.Workflow{}, fmt.Errorf("workflow %q already exists (cwd=%s)", opts.Name, existing.Cwd)
 	}
 
+	var worktreePath, worktreeRepo string
+
+	if opts.WorktreeMode {
+		if s.Git == nil {
+			return workflow.Workflow{}, fmt.Errorf("git client not configured")
+		}
+		worktreeRepo = opts.WorktreeRepo
+
+		if opts.AttachWorktree != "" {
+			worktreePath = opts.AttachWorktree
+			opts.Cwd = opts.AttachWorktree
+		} else {
+			branch := opts.GitBranch
+			if branch == "" {
+				branch = opts.Name
+			}
+			wtPath := filepath.Join(filepath.Dir(worktreeRepo), opts.Name)
+			if err := s.Git.CreateWorktree(git.WorktreeOpts{
+				Path:   wtPath,
+				Branch: branch,
+			}); err != nil {
+				return workflow.Workflow{}, fmt.Errorf("create worktree: %w", err)
+			}
+			worktreePath = wtPath
+			opts.Cwd = wtPath
+			opts.GitBranch = branch
+		}
+	}
+
 	sessionName := workflow.TmuxSessionName(opts.Name)
 	h := harness.Get(opts.Harness)
 	harnessCmd := h.LaunchCommand("")
+	if opts.WorktreeMode {
+		if ch, ok := h.(interface{ LaunchCommandAutoMode(string) string }); ok {
+			harnessCmd = ch.LaunchCommandAutoMode("")
+		}
+	}
 	env := map[string]string{"ARTETA_WORKFLOW": opts.Name}
 
 	// Step 1: allocate tmux session with the requested layout.
@@ -94,15 +134,17 @@ func (s *Service) Create(opts CreateOpts) (workflow.Workflow, error) {
 
 	// Step 3: persist workflow.
 	w := workflow.Workflow{
-		Name:        opts.Name,
-		Cwd:         opts.Cwd,
-		TmuxSession: sessionName,
-		Harness:     h.ID(),
-		GitBranch:   opts.GitBranch,
-		Layout:      opts.Layout,
-		HarnessPane: 1,
-		ITermTab:    &workflow.ITermTab{WindowID: tab.WindowID, TabID: tab.TabID},
-		CreatedAt:   s.now(),
+		Name:         opts.Name,
+		Cwd:          opts.Cwd,
+		TmuxSession:  sessionName,
+		Harness:      h.ID(),
+		GitBranch:    opts.GitBranch,
+		WorktreePath: worktreePath,
+		WorktreeRepo: worktreeRepo,
+		Layout:       opts.Layout,
+		HarnessPane:  1,
+		ITermTab:     &workflow.ITermTab{WindowID: tab.WindowID, TabID: tab.TabID},
+		CreatedAt:    s.now(),
 	}
 	if err := s.Store.SaveWorkflow(w); err != nil {
 		_ = s.Term.CloseTab(tab)
@@ -149,9 +191,31 @@ func (s *Service) Open(name string) error {
 	return nil
 }
 
+// RemovalScope controls what gets cleaned up when closing a worktree workflow.
+type RemovalScope int
+
+const (
+	RemoveWorkflowOnly        RemovalScope = iota
+	RemoveWorkflowAndWorktree
+)
+
+// RemovalAdvisory describes whether a worktree workflow can safely be deleted
+// along with its worktree, and what the default action should be.
+type RemovalAdvisory struct {
+	Removable bool
+	Reason    string
+	Default   RemovalScope
+}
+
 // Close kills the tmux session, closes the iTerm tab (if any), and
 // removes the workflow + status from the store.
 func (s *Service) Close(name string) error {
+	return s.CloseWithScope(name, RemoveWorkflowOnly)
+}
+
+// CloseWithScope closes a workflow. When scope is RemoveWorkflowAndWorktree
+// and the workflow has a worktree, the git worktree and branch are also removed.
+func (s *Service) CloseWithScope(name string, scope RemovalScope) error {
 	w, err := s.Store.LoadWorkflow(name)
 	if err != nil {
 		return err
@@ -164,7 +228,86 @@ func (s *Service) Close(name string) error {
 	if w.ITermTab != nil {
 		_ = s.Term.CloseTab(terminal.TabHandle{WindowID: w.ITermTab.WindowID, TabID: w.ITermTab.TabID})
 	}
-	return s.Store.DeleteWorkflow(name)
+	if err := s.Store.DeleteWorkflow(name); err != nil {
+		return err
+	}
+
+	if scope == RemoveWorkflowAndWorktree && w.WorktreePath != "" && s.Git != nil {
+		if err := s.Git.RemoveWorktree(w.WorktreePath); err != nil {
+			return fmt.Errorf("remove worktree: %w", err)
+		}
+		if w.GitBranch != "" {
+			if err := s.Git.DeleteBranch(w.GitBranch); err != nil {
+				return fmt.Errorf("delete branch: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+// RemovalAdvisory checks the git status of a worktree workflow and returns
+// advice on whether the worktree can safely be removed.
+func (s *Service) RemovalAdvisory(name string) (RemovalAdvisory, error) {
+	w, err := s.Store.LoadWorkflow(name)
+	if err != nil {
+		return RemovalAdvisory{}, err
+	}
+	if w.WorktreePath == "" {
+		return RemovalAdvisory{Removable: true, Default: RemoveWorkflowOnly}, nil
+	}
+	if s.Git == nil {
+		return RemovalAdvisory{Removable: true, Default: RemoveWorkflowOnly}, nil
+	}
+
+	st, err := s.Git.Status(w.WorktreePath)
+	if err != nil {
+		return RemovalAdvisory{Removable: true, Default: RemoveWorkflowOnly, Reason: "could not check git status"}, nil
+	}
+
+	if st.Dirty || st.UnpushedCount > 0 {
+		var parts []string
+		if st.Dirty {
+			parts = append(parts, "uncommitted changes")
+		}
+		if st.UnpushedCount > 0 {
+			parts = append(parts, fmt.Sprintf("%d unpushed commit(s)", st.UnpushedCount))
+		}
+		return RemovalAdvisory{
+			Removable: true,
+			Reason:    "worktree has " + joinParts(parts),
+			Default:   RemoveWorkflowOnly,
+		}, nil
+	}
+	return RemovalAdvisory{Removable: true, Default: RemoveWorkflowAndWorktree}, nil
+}
+
+// ListRepoWorktrees returns non-main worktrees for the given repo path.
+func (s *Service) ListRepoWorktrees(repoPath string) ([]git.Worktree, error) {
+	if s.Git == nil {
+		return nil, nil
+	}
+	wts, err := s.Git.ListWorktrees()
+	if err != nil {
+		return nil, err
+	}
+	var out []git.Worktree
+	for _, wt := range wts {
+		if !wt.IsMain {
+			out = append(out, wt)
+		}
+	}
+	return out, nil
+}
+
+func joinParts(parts []string) string {
+	switch len(parts) {
+	case 0:
+		return ""
+	case 1:
+		return parts[0]
+	default:
+		return parts[0] + " and " + parts[1]
+	}
 }
 
 // Revive restarts a dormant workflow's tmux session and reopens its iTerm

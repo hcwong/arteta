@@ -130,3 +130,49 @@ func TestTmuxSessionName(t *testing.T) {
 		t.Errorf("TmuxSessionName(%q) = %q, want %q", "auth-refactor", got, "arteta-auth-refactor")
 	}
 }
+
+func TestWorkflow_UnmarshalJSON_BackwardCompat(t *testing.T) {
+	// Old workflow JSON without worktree fields should unmarshal cleanly.
+	data := []byte(`{
+		"name": "old-wf",
+		"cwd": "/repo",
+		"tmux_session": "arteta-old-wf",
+		"layout": "single",
+		"created_at": "2026-05-09T17:00:00Z"
+	}`)
+	var w Workflow
+	if err := w.UnmarshalJSON(data); err != nil {
+		t.Fatalf("UnmarshalJSON: %v", err)
+	}
+	if w.WorktreePath != "" {
+		t.Errorf("WorktreePath should be empty for old JSON, got %q", w.WorktreePath)
+	}
+	if w.WorktreeRepo != "" {
+		t.Errorf("WorktreeRepo should be empty for old JSON, got %q", w.WorktreeRepo)
+	}
+	if w.Harness != "claude" {
+		t.Errorf("Harness should default to claude, got %q", w.Harness)
+	}
+}
+
+func TestWorkflow_UnmarshalJSON_WithWorktreeFields(t *testing.T) {
+	data := []byte(`{
+		"name": "wt-wf",
+		"cwd": "/worktrees/feat",
+		"tmux_session": "arteta-wt-wf",
+		"worktree_path": "/worktrees/feat",
+		"worktree_repo": "/repo",
+		"layout": "vsplit",
+		"created_at": "2026-05-09T17:00:00Z"
+	}`)
+	var w Workflow
+	if err := w.UnmarshalJSON(data); err != nil {
+		t.Fatalf("UnmarshalJSON: %v", err)
+	}
+	if w.WorktreePath != "/worktrees/feat" {
+		t.Errorf("WorktreePath = %q, want /worktrees/feat", w.WorktreePath)
+	}
+	if w.WorktreeRepo != "/repo" {
+		t.Errorf("WorktreeRepo = %q, want /repo", w.WorktreeRepo)
+	}
+}

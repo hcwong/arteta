@@ -135,8 +135,12 @@ func createCmd(svc *service.Service, opts service.CreateOpts) tea.Cmd {
 }
 
 func closeCmd(svc *service.Service, name string) tea.Cmd {
+	return closeWithScopeCmd(svc, name, service.RemoveWorkflowOnly)
+}
+
+func closeWithScopeCmd(svc *service.Service, name string, scope service.RemovalScope) tea.Cmd {
 	return func() tea.Msg {
-		if err := svc.Close(name); err != nil {
+		if err := svc.CloseWithScope(name, scope); err != nil {
 			return errMsg{err}
 		}
 		return closeDoneMsg{name: name}

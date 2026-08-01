@@ -27,6 +27,14 @@ func (c claudeHarness) LaunchCommand(resumeID string) string {
 	return base + `; printf '\n[arteta] Claude exited — type "claude" to restart.\n'; exec ${SHELL:-/bin/sh} -l`
 }
 
+func (c claudeHarness) LaunchCommandAutoMode(resumeID string) string {
+	base := "claude --dangerously-skip-permissions"
+	if resumeID != "" {
+		base = "claude --dangerously-skip-permissions --resume " + resumeID
+	}
+	return base + `; printf '\n[arteta] Claude exited — type "claude" to restart.\n'; exec ${SHELL:-/bin/sh} -l`
+}
+
 func (c claudeHarness) HookConfig() *HookConfig {
 	home, _ := os.UserHomeDir()
 	return &HookConfig{

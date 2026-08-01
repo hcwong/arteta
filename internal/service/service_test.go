@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hcwong/arteta/internal/git"
 	"github.com/hcwong/arteta/internal/harness"
 	"github.com/hcwong/arteta/internal/store"
 	"github.com/hcwong/arteta/internal/terminal"
@@ -604,5 +605,310 @@ func TestOpen_WritesCycleCursor(t *testing.T) {
 	cursor, _ := st.LoadCycleCursor()
 	if cursor != "wfA" {
 		t.Errorf("cursor after Open = %q, want %q", cursor, "wfA")
+	}
+}
+
+// --- Worktree tests ---
+
+func newTestServiceWithGit(t *testing.T) (*Service, *tmux.Fake, *terminal.Fake, *store.Store, *git.Fake) {
+	t.Helper()
+	st := store.New(t.TempDir())
+	tx := tmux.NewFake()
+	tm := terminal.NewFake()
+	gf := git.NewFake("/repo")
+	now := time.Date(2026, 5, 9, 17, 0, 0, 0, time.UTC)
+	s := &Service{
+		Store: st,
+		Tmux:  tx,
+		Term:  tm,
+		Git:   gf,
+		Now:   func() time.Time { return now },
+	}
+	return s, tx, tm, st, gf
+}
+
+func TestCreate_Worktree_CreatesWorktreeAndPersists(t *testing.T) {
+	s, tx, _, st, gf := newTestServiceWithGit(t)
+	w, err := s.Create(CreateOpts{
+		Name:         "feat-auth",
+		Cwd:          "/repo",
+		Layout:       workflow.LayoutSingle,
+		WorktreeMode: true,
+		WorktreeRepo: "/repo",
+	})
+	if err != nil {
+		t.Fatalf("Create worktree: %v", err)
+	}
+
+	if w.WorktreeRepo != "/repo" {
+		t.Errorf("WorktreeRepo = %q, want /repo", w.WorktreeRepo)
+	}
+	if w.WorktreePath == "" {
+		t.Error("WorktreePath should be set")
+	}
+	if w.GitBranch != "feat-auth" {
+		t.Errorf("GitBranch = %q, want feat-auth (auto-derived from name)", w.GitBranch)
+	}
+
+	// Git fake should have CreateWorktree called.
+	if !containsCall(gf.Calls, "CreateWorktree:") {
+		t.Errorf("expected CreateWorktree call, got: %v", gf.Calls)
+	}
+
+	// Tmux session should use the worktree path as cwd.
+	sess := tx.Sessions()["arteta-feat-auth"]
+	if sess == nil {
+		t.Fatal("tmux session not created")
+	}
+	if sess.Cwd != w.WorktreePath {
+		t.Errorf("tmux session cwd = %q, want worktree path %q", sess.Cwd, w.WorktreePath)
+	}
+
+	// Persisted workflow has worktree fields.
+	loaded, err := st.LoadWorkflow("feat-auth")
+	if err != nil {
+		t.Fatalf("LoadWorkflow: %v", err)
+	}
+	if loaded.WorktreePath == "" || loaded.WorktreeRepo == "" {
+		t.Errorf("persisted worktree fields empty: path=%q repo=%q", loaded.WorktreePath, loaded.WorktreeRepo)
+	}
+}
+
+func TestCreate_Worktree_AttachExisting(t *testing.T) {
+	s, tx, _, _, gf := newTestServiceWithGit(t)
+
+	// Pre-create a worktree in the fake.
+	_ = gf.CreateWorktree(git.WorktreeOpts{Path: "/worktrees/existing", Branch: "existing"})
+	gf.Calls = nil // reset
+
+	w, err := s.Create(CreateOpts{
+		Name:           "use-existing",
+		Cwd:            "/repo",
+		Layout:         workflow.LayoutSingle,
+		WorktreeMode:   true,
+		WorktreeRepo:   "/repo",
+		AttachWorktree: "/worktrees/existing",
+	})
+	if err != nil {
+		t.Fatalf("Create attach: %v", err)
+	}
+	if w.WorktreePath != "/worktrees/existing" {
+		t.Errorf("WorktreePath = %q, want /worktrees/existing", w.WorktreePath)
+	}
+	// Should NOT have called CreateWorktree again.
+	for _, c := range gf.Calls {
+		if strings.HasPrefix(c, "CreateWorktree") {
+			t.Errorf("attach mode should not call CreateWorktree, got: %v", gf.Calls)
+		}
+	}
+	// Tmux session uses the attached worktree path.
+	sess := tx.Sessions()["arteta-use-existing"]
+	if sess.Cwd != "/worktrees/existing" {
+		t.Errorf("tmux cwd = %q, want /worktrees/existing", sess.Cwd)
+	}
+}
+
+func TestCreate_Worktree_CustomBranch(t *testing.T) {
+	s, _, _, _, gf := newTestServiceWithGit(t)
+	_, err := s.Create(CreateOpts{
+		Name:         "wf",
+		Cwd:          "/repo",
+		Layout:       workflow.LayoutSingle,
+		WorktreeMode: true,
+		WorktreeRepo: "/repo",
+		GitBranch:    "custom-branch",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// The CreateWorktree call should have used custom-branch.
+	found := false
+	for _, c := range gf.Calls {
+		if strings.HasPrefix(c, "CreateWorktree:") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected CreateWorktree call, got: %v", gf.Calls)
+	}
+}
+
+func TestCreate_Worktree_NoGitClient_Errors(t *testing.T) {
+	s, _, _, _ := newTestService(t) // no Git client
+	_, err := s.Create(CreateOpts{
+		Name:         "wf",
+		Cwd:          "/repo",
+		Layout:       workflow.LayoutSingle,
+		WorktreeMode: true,
+		WorktreeRepo: "/repo",
+	})
+	if err == nil {
+		t.Fatal("expected error when Git client is nil")
+	}
+}
+
+func TestCloseWithScope_WorkflowOnly(t *testing.T) {
+	s, tx, _, st, gf := newTestServiceWithGit(t)
+	_, err := s.Create(CreateOpts{
+		Name:         "wt-wf",
+		Cwd:          "/repo",
+		Layout:       workflow.LayoutSingle,
+		WorktreeMode: true,
+		WorktreeRepo: "/repo",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	gf.Calls = nil
+
+	if err := s.CloseWithScope("wt-wf", RemoveWorkflowOnly); err != nil {
+		t.Fatalf("CloseWithScope: %v", err)
+	}
+
+	// Tmux session should be gone.
+	if has, _ := tx.HasSession("arteta-wt-wf"); has {
+		t.Error("tmux session still exists")
+	}
+	// Workflow store entry should be gone.
+	if _, err := st.LoadWorkflow("wt-wf"); err == nil {
+		t.Error("workflow still in store")
+	}
+	// Git worktree should NOT have been removed.
+	for _, c := range gf.Calls {
+		if strings.HasPrefix(c, "RemoveWorktree") {
+			t.Errorf("RemoveWorktree should not be called for WorkflowOnly, got: %v", gf.Calls)
+		}
+	}
+}
+
+func TestCloseWithScope_WorkflowAndWorktree(t *testing.T) {
+	s, _, _, _, gf := newTestServiceWithGit(t)
+	_, err := s.Create(CreateOpts{
+		Name:         "wt-wf",
+		Cwd:          "/repo",
+		Layout:       workflow.LayoutSingle,
+		WorktreeMode: true,
+		WorktreeRepo: "/repo",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	gf.Calls = nil
+
+	if err := s.CloseWithScope("wt-wf", RemoveWorkflowAndWorktree); err != nil {
+		t.Fatalf("CloseWithScope: %v", err)
+	}
+
+	if !containsCall(gf.Calls, "RemoveWorktree:") {
+		t.Errorf("expected RemoveWorktree call, got: %v", gf.Calls)
+	}
+	if !containsCall(gf.Calls, "DeleteBranch:wt-wf") {
+		t.Errorf("expected DeleteBranch call, got: %v", gf.Calls)
+	}
+}
+
+func TestCloseWithScope_NonWorktreeWorkflow_IgnoresScope(t *testing.T) {
+	s, _, _, _, _ := newTestServiceWithGit(t)
+	_, err := s.Create(CreateOpts{
+		Name:   "normal-wf",
+		Cwd:    "/repo",
+		Layout: workflow.LayoutSingle,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// Should not error even with RemoveWorkflowAndWorktree on a non-worktree workflow.
+	if err := s.CloseWithScope("normal-wf", RemoveWorkflowAndWorktree); err != nil {
+		t.Fatalf("CloseWithScope: %v", err)
+	}
+}
+
+func TestRemovalAdvisory_Clean(t *testing.T) {
+	s, _, _, _, _ := newTestServiceWithGit(t)
+	_, err := s.Create(CreateOpts{
+		Name:         "clean-wf",
+		Cwd:          "/repo",
+		Layout:       workflow.LayoutSingle,
+		WorktreeMode: true,
+		WorktreeRepo: "/repo",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	adv, err := s.RemovalAdvisory("clean-wf")
+	if err != nil {
+		t.Fatalf("RemovalAdvisory: %v", err)
+	}
+	if !adv.Removable {
+		t.Error("clean worktree should be removable")
+	}
+	if adv.Default != RemoveWorkflowAndWorktree {
+		t.Errorf("default scope for clean = %d, want RemoveWorkflowAndWorktree", adv.Default)
+	}
+}
+
+func TestRemovalAdvisory_Dirty(t *testing.T) {
+	s, _, _, _, gf := newTestServiceWithGit(t)
+	gf.StatusFunc = func(cwd string) (git.StatusResult, error) {
+		return git.StatusResult{Dirty: true, UnpushedCount: 2}, nil
+	}
+	_, err := s.Create(CreateOpts{
+		Name:         "dirty-wf",
+		Cwd:          "/repo",
+		Layout:       workflow.LayoutSingle,
+		WorktreeMode: true,
+		WorktreeRepo: "/repo",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	adv, err := s.RemovalAdvisory("dirty-wf")
+	if err != nil {
+		t.Fatalf("RemovalAdvisory: %v", err)
+	}
+	if adv.Default != RemoveWorkflowOnly {
+		t.Errorf("default scope for dirty = %d, want RemoveWorkflowOnly", adv.Default)
+	}
+	if adv.Reason == "" {
+		t.Error("dirty worktree should have a reason")
+	}
+}
+
+func TestRemovalAdvisory_NonWorktreeWorkflow(t *testing.T) {
+	s, _, _, _, _ := newTestServiceWithGit(t)
+	_, err := s.Create(CreateOpts{
+		Name:   "normal",
+		Cwd:    "/repo",
+		Layout: workflow.LayoutSingle,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	adv, err := s.RemovalAdvisory("normal")
+	if err != nil {
+		t.Fatalf("RemovalAdvisory: %v", err)
+	}
+	if adv.Default != RemoveWorkflowOnly {
+		t.Errorf("non-worktree should default to WorkflowOnly")
+	}
+}
+
+func TestListRepoWorktrees(t *testing.T) {
+	s, _, _, _, gf := newTestServiceWithGit(t)
+
+	// Add some worktrees to the fake.
+	_ = gf.CreateWorktree(git.WorktreeOpts{Path: "/wt/feat-a", Branch: "feat-a"})
+	_ = gf.CreateWorktree(git.WorktreeOpts{Path: "/wt/feat-b", Branch: "feat-b"})
+
+	wts, err := s.ListRepoWorktrees("/repo")
+	if err != nil {
+		t.Fatalf("ListRepoWorktrees: %v", err)
+	}
+	// Should exclude main worktree, return only the two we added.
+	if len(wts) != 2 {
+		t.Errorf("ListRepoWorktrees returned %d, want 2", len(wts))
 	}
 }

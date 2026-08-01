@@ -32,6 +32,29 @@ func TestClaudeHarness_LaunchCommand(t *testing.T) {
 	}
 }
 
+func TestClaudeHarness_LaunchCommandAutoMode(t *testing.T) {
+	h := claudeHarness{}
+
+	got := h.LaunchCommandAutoMode("")
+	if !strings.Contains(got, "--dangerously-skip-permissions") {
+		t.Errorf("auto mode should include --dangerously-skip-permissions, got %q", got)
+	}
+	if !strings.Contains(got, shellFallback) {
+		t.Errorf("auto mode missing shell fallback, got %q", got)
+	}
+	if strings.Contains(got, "--resume") {
+		t.Errorf("auto mode without resume should not contain --resume, got %q", got)
+	}
+
+	resumed := h.LaunchCommandAutoMode("abc-123")
+	if !strings.Contains(resumed, "--dangerously-skip-permissions") {
+		t.Errorf("auto mode resumed missing --dangerously-skip-permissions, got %q", resumed)
+	}
+	if !strings.Contains(resumed, "--resume abc-123") {
+		t.Errorf("auto mode resumed missing --resume, got %q", resumed)
+	}
+}
+
 func TestClaudeHarness_DetectState_Box(t *testing.T) {
 	h := claudeHarness{}
 	content := "╭──────────────╮\n│ Allow? (y/n) │\n╰──────────────╯"

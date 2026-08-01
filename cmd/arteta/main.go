@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	gitpkg "github.com/hcwong/arteta/internal/git"
 	"github.com/hcwong/arteta/internal/harness"
 	"github.com/hcwong/arteta/internal/hook"
 	"github.com/hcwong/arteta/internal/installer"
@@ -136,10 +137,19 @@ func buildService() (*store.Store, *service.Service, error) {
 		return nil, nil, fmt.Errorf("mkdir state root: %w", err)
 	}
 	st := store.New(root)
+	cwd, _ := os.Getwd()
+	var gitClient gitpkg.Client
+	if cwd != "" {
+		gc := gitpkg.NewReal(cwd)
+		if gc.IsGitRepo() {
+			gitClient = gc
+		}
+	}
 	svc := &service.Service{
 		Store:      st,
 		Tmux:       tmux.NewReal(tmux.DefaultSocket),
 		Term:       terminal.NewITerm(),
+		Git:        gitClient,
 		Now:        func() time.Time { return time.Now().UTC() },
 		SocketName: tmux.DefaultSocket,
 	}
@@ -239,7 +249,8 @@ func newDoctorCmd() *cobra.Command {
 }
 
 func newCloseCmd() *cobra.Command {
-	return &cobra.Command{
+	var withWorktree bool
+	cmd := &cobra.Command{
 		Use:   "close <name>",
 		Short: "Close a workflow (kills tmux session, closes iTerm tab, deletes state)",
 		Args:  cobra.ExactArgs(1),
@@ -248,13 +259,23 @@ func newCloseCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := svc.Close(args[0]); err != nil {
+			scope := service.RemoveWorkflowOnly
+			if withWorktree {
+				scope = service.RemoveWorkflowAndWorktree
+			}
+			if err := svc.CloseWithScope(args[0], scope); err != nil {
 				return err
 			}
-			fmt.Printf("Closed workflow %q\n", args[0])
+			msg := "Closed workflow %q\n"
+			if withWorktree {
+				msg = "Closed workflow %q (worktree + branch removed)\n"
+			}
+			fmt.Printf(msg, args[0])
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&withWorktree, "worktree", false, "Also remove the git worktree and branch")
+	return cmd
 }
 
 func newRestartCmd() *cobra.Command {
