@@ -316,7 +316,7 @@ func (m Model) captureSelectedCmd() tea.Cmd {
 	if session == "" {
 		return nil
 	}
-	return capturePaneCmd(m.Service, it.Workflow.Name, session)
+	return capturePaneCmd(m.Service, it.Workflow.Name, session, it.Workflow.HarnessPane)
 }
 
 func (m Model) updateCreate(msg tea.Msg) (tea.Model, tea.Cmd) {

@@ -14,6 +14,7 @@ type BuildOpts struct {
 	Layout     workflow.Layout
 	HarnessCmd string // command for pane 0; harness-specific (e.g. "claude --resume <sid>")
 	Env        map[string]string
+	SidebarCmd string // when non-empty, a sidebar pane is added to the left
 }
 
 // Pane content commands per layout, hardcoded for MVP (DECISIONS.md §6).
@@ -66,4 +67,20 @@ func BuildLayout(opts BuildOpts) error {
 		return c.SelectLayout(opts.Name, "tiled")
 	}
 	return fmt.Errorf("unhandled layout %q", opts.Layout)
+}
+
+const sidebarWidth = 25
+
+// AddSidebar splits pane 0 to add a narrow sidebar on the left. The new pane
+// gets the next sequential index, so pane 0 (harness) keeps its index.
+func AddSidebar(c Client, session string, sidebarCmd string, env map[string]string) error {
+	return c.SplitWindow(SplitOpts{
+		Target:  fmt.Sprintf("%s:0.0", session),
+		Dir:     SplitVertical,
+		Before:  true,
+		Size:    sidebarWidth,
+		NoFocus: true,
+		Cmd:     sidebarCmd,
+		Env:     env,
+	})
 }

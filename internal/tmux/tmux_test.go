@@ -154,6 +154,84 @@ func TestBuildLayout_Quad(t *testing.T) {
 	}
 }
 
+func TestAddSidebar_TargetsPane0(t *testing.T) {
+	f := NewFake()
+	// Build a vsplit layout: pane 0 (claude) + pane 1 (terminal).
+	if err := BuildLayout(BuildOpts{Client: f, Name: "wf", Cwd: "/repo", Layout: workflow.LayoutVSplit, HarnessCmd: "claude"}); err != nil {
+		t.Fatalf("BuildLayout: %v", err)
+	}
+	s := f.Sessions()["wf"]
+	if len(s.Panes) != 2 {
+		t.Fatalf("vsplit: got %d panes, want 2", len(s.Panes))
+	}
+
+	// AddSidebar should target pane 0 specifically.
+	if err := AddSidebar(f, "wf", "arteta sidebar", map[string]string{"ARTETA_WORKFLOW": "wf"}); err != nil {
+		t.Fatalf("AddSidebar: %v", err)
+	}
+	s = f.Sessions()["wf"]
+	if len(s.Panes) != 3 {
+		t.Errorf("after sidebar: got %d panes, want 3", len(s.Panes))
+	}
+
+	// Verify the SplitWindow call targeted pane 0 (session:0).
+	found := false
+	for _, c := range f.Calls {
+		if c == "SplitWindow:wf:0.0" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("AddSidebar should target wf:0, calls: %v", f.Calls)
+	}
+
+	// Pane 0 must still be claude (sidebar doesn't displace it in the Fake).
+	if s.Panes[0].Cmd != "claude" {
+		t.Errorf("pane 0 should still be claude, got %q", s.Panes[0].Cmd)
+	}
+	// Last pane is the sidebar.
+	last := s.Panes[len(s.Panes)-1]
+	if last.Cmd != "arteta sidebar" {
+		t.Errorf("sidebar pane cmd: got %q, want %q", last.Cmd, "arteta sidebar")
+	}
+	if last.Env["ARTETA_WORKFLOW"] != "wf" {
+		t.Errorf("sidebar pane missing ARTETA_WORKFLOW env")
+	}
+}
+
+func TestAddSidebar_AllLayouts(t *testing.T) {
+	layouts := []struct {
+		name      string
+		layout    workflow.Layout
+		basePanes int
+	}{
+		{"single", workflow.LayoutSingle, 1},
+		{"vsplit", workflow.LayoutVSplit, 2},
+		{"hsplit", workflow.LayoutHSplit, 2},
+		{"quad", workflow.LayoutQuad, 4},
+	}
+	for _, tc := range layouts {
+		t.Run(tc.name, func(t *testing.T) {
+			f := NewFake()
+			if err := BuildLayout(BuildOpts{Client: f, Name: "wf", Cwd: "/repo", Layout: tc.layout, HarnessCmd: "claude"}); err != nil {
+				t.Fatalf("BuildLayout: %v", err)
+			}
+			if err := AddSidebar(f, "wf", "arteta sidebar", nil); err != nil {
+				t.Fatalf("AddSidebar: %v", err)
+			}
+			s := f.Sessions()["wf"]
+			want := tc.basePanes + 1
+			if len(s.Panes) != want {
+				t.Errorf("%s + sidebar: got %d panes, want %d", tc.name, len(s.Panes), want)
+			}
+			if s.Panes[0].Cmd != "claude" {
+				t.Errorf("pane 0 must remain claude, got %q", s.Panes[0].Cmd)
+			}
+		})
+	}
+}
+
 func TestBuildLayout_InvalidLayout(t *testing.T) {
 	f := NewFake()
 	err := BuildLayout(BuildOpts{Client: f, Name: "wf", Layout: workflow.Layout("nope")})

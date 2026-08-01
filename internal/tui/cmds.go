@@ -175,9 +175,9 @@ func restartAllCmd(svc *service.Service) tea.Cmd {
 // heuristic detection on the result. Errors ride on previewMsg.err so the
 // model can decide whether to surface them (instead of polluting the persistent
 // m.err channel on every transient race with KillSession).
-func capturePaneCmd(svc *service.Service, name, sessionName string) tea.Cmd {
+func capturePaneCmd(svc *service.Service, name, sessionName string, harnessPane int) tea.Cmd {
 	return func() tea.Msg {
-		out, err := svc.Tmux.CapturePane(sessionName, 0)
+		out, err := svc.Tmux.CapturePane(sessionName, harnessPane)
 		if err != nil {
 			return previewMsg{name: name, err: err}
 		}
@@ -196,7 +196,7 @@ func captureUncachedCmd(svc *service.Service, items []DisplayItem, cached map[st
 			continue
 		}
 		if cached[it.Workflow.Name] == "" {
-			cmds = append(cmds, capturePaneCmd(svc, it.Workflow.Name, it.Workflow.TmuxSession))
+			cmds = append(cmds, capturePaneCmd(svc, it.Workflow.Name, it.Workflow.TmuxSession, it.Workflow.HarnessPane))
 		}
 	}
 	return tea.Batch(cmds...)

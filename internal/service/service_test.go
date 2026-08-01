@@ -80,8 +80,8 @@ func TestCreate_Quad_BuildsAllPanesAndPersists(t *testing.T) {
 	if sess == nil {
 		t.Fatal("tmux session not created")
 	}
-	if len(sess.Panes) != 4 {
-		t.Errorf("expected 4 panes, got %d", len(sess.Panes))
+	if len(sess.Panes) != 5 {
+		t.Errorf("expected 5 panes (4 layout + sidebar), got %d", len(sess.Panes))
 	}
 	if sess.Panes[0].Env["ARTETA_WORKFLOW"] != "auth-refactor" {
 		t.Errorf("ARTETA_WORKFLOW env not set on claude pane: %+v", sess.Panes[0].Env)
@@ -270,22 +270,21 @@ func TestRestartAll_LiveSessionsGetRespawned(t *testing.T) {
 	}
 
 	// Both sessions should have had RespawnPane called.
-	respawn1 := containsCall(tx.Calls, "RespawnPane:arteta-wf1:0")
-	respawn2 := containsCall(tx.Calls, "RespawnPane:arteta-wf2:0")
+	respawn1 := containsCall(tx.Calls, "RespawnPane:arteta-wf1:1")
+	respawn2 := containsCall(tx.Calls, "RespawnPane:arteta-wf2:1")
 	if !respawn1 || !respawn2 {
 		t.Errorf("RespawnPane calls: %v", tx.Calls)
 	}
 
-	// wf1 has no session ID → cmd should be the plain-claude command.
+	// Harness is at pane 1 (pane 0 is sidebar).
 	sess1 := tx.Sessions()["arteta-wf1"]
-	if sess1.Panes[0].Cmd != claudeCommand("") {
-		t.Errorf("wf1 pane cmd: got %q, want %q", sess1.Panes[0].Cmd, claudeCommand(""))
+	if sess1.Panes[1].Cmd != claudeCommand("") {
+		t.Errorf("wf1 harness pane cmd: got %q, want %q", sess1.Panes[1].Cmd, claudeCommand(""))
 	}
 
-	// wf2 has a session ID → cmd should be "claude --resume sess-abc".
 	sess2 := tx.Sessions()["arteta-wf2"]
-	if !strings.Contains(sess2.Panes[0].Cmd, "claude --resume sess-abc") {
-		t.Errorf("wf2 pane cmd: got %q, want claude --resume sess-abc", sess2.Panes[0].Cmd)
+	if !strings.Contains(sess2.Panes[1].Cmd, "claude --resume sess-abc") {
+		t.Errorf("wf2 harness pane cmd: got %q, want claude --resume sess-abc", sess2.Panes[1].Cmd)
 	}
 }
 
@@ -321,6 +320,90 @@ func TestRestartAll_NoWorkflows_ReturnsZero(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("RestartAll returned %d, want 0", n)
+	}
+}
+
+func TestCreate_SidebarAddedForAllLayouts(t *testing.T) {
+	layouts := []struct {
+		name      string
+		layout    workflow.Layout
+		wantPanes int // layout panes + sidebar
+	}{
+		{"single", workflow.LayoutSingle, 2},
+		{"vsplit", workflow.LayoutVSplit, 3},
+		{"hsplit", workflow.LayoutHSplit, 3},
+		{"quad", workflow.LayoutQuad, 5},
+	}
+	for _, tc := range layouts {
+		t.Run(tc.name, func(t *testing.T) {
+			s, tx, _, _ := newTestService(t)
+			_, err := s.Create(CreateOpts{
+				Name:   "wf-" + tc.name,
+				Cwd:    "/r",
+				Layout: tc.layout,
+			})
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			sess := tx.Sessions()["arteta-wf-"+tc.name]
+			if sess == nil {
+				t.Fatal("session not created")
+			}
+			if len(sess.Panes) != tc.wantPanes {
+				t.Errorf("%s: got %d panes, want %d", tc.name, len(sess.Panes), tc.wantPanes)
+			}
+			// Pane 0 must always be the harness.
+			if !strings.Contains(sess.Panes[0].Cmd, "claude") {
+				t.Errorf("pane 0 should be claude, got %q", sess.Panes[0].Cmd)
+			}
+			// Last pane must be the sidebar.
+			last := sess.Panes[len(sess.Panes)-1]
+			if !strings.Contains(last.Cmd, "sidebar") {
+				t.Errorf("last pane should be sidebar, got cmd %q", last.Cmd)
+			}
+			// Sidebar split must target pane 0.
+			if !containsCall(tx.Calls, "SplitWindow:arteta-wf-"+tc.name+":0.0") {
+				t.Errorf("sidebar should target pane 0, calls: %v", tx.Calls)
+			}
+		})
+	}
+}
+
+func TestSidebarToggle_HidesAndShows(t *testing.T) {
+	s, tx, _, _ := newTestService(t)
+	_, err := s.Create(CreateOpts{Name: "wf", Cwd: "/r", Layout: workflow.LayoutSingle})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	sess := tx.Sessions()["arteta-wf"]
+	if len(sess.Panes) != 2 {
+		t.Fatalf("after create: got %d panes, want 2 (harness + sidebar)", len(sess.Panes))
+	}
+
+	// Toggle off: should hide sidebar.
+	shown, err := s.SidebarToggle("wf")
+	if err != nil {
+		t.Fatalf("SidebarToggle (hide): %v", err)
+	}
+	if shown {
+		t.Error("expected shown=false when hiding")
+	}
+	sess = tx.Sessions()["arteta-wf"]
+	if len(sess.Panes) != 1 {
+		t.Errorf("after hide: got %d panes, want 1", len(sess.Panes))
+	}
+
+	// Toggle on: should show sidebar again.
+	shown, err = s.SidebarToggle("wf")
+	if err != nil {
+		t.Fatalf("SidebarToggle (show): %v", err)
+	}
+	if !shown {
+		t.Error("expected shown=true when showing")
+	}
+	sess = tx.Sessions()["arteta-wf"]
+	if len(sess.Panes) != 2 {
+		t.Errorf("after show: got %d panes, want 2", len(sess.Panes))
 	}
 }
 

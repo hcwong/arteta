@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -77,6 +78,12 @@ func (s *Service) Create(opts CreateOpts) (workflow.Workflow, error) {
 		return workflow.Workflow{}, fmt.Errorf("build tmux layout: %w", err)
 	}
 
+	// Step 1b: add sidebar pane.
+	if err := s.addSidebar(sessionName, env); err != nil {
+		_ = s.Tmux.KillSession(sessionName)
+		return workflow.Workflow{}, fmt.Errorf("add sidebar: %w", err)
+	}
+
 	// Step 2: open iTerm tab attached to the session.
 	attach := s.attachCmd(sessionName)
 	tab, err := s.Term.OpenTab(terminal.OpenOpts{Title: opts.Name, Command: attach})
@@ -93,6 +100,7 @@ func (s *Service) Create(opts CreateOpts) (workflow.Workflow, error) {
 		Harness:     h.ID(),
 		GitBranch:   opts.GitBranch,
 		Layout:      opts.Layout,
+		HarnessPane: 1,
 		ITermTab:    &workflow.ITermTab{WindowID: tab.WindowID, TabID: tab.TabID},
 		CreatedAt:   s.now(),
 	}
@@ -179,6 +187,10 @@ func (s *Service) Revive(name string) error {
 	}); err != nil {
 		return fmt.Errorf("build tmux layout: %w", err)
 	}
+	if err := s.addSidebar(w.TmuxSession, env); err != nil {
+		_ = s.Tmux.KillSession(w.TmuxSession)
+		return fmt.Errorf("add sidebar: %w", err)
+	}
 	tab, err := s.Term.OpenTab(terminal.OpenOpts{
 		Title:   w.Name,
 		Command: s.attachCmd(w.TmuxSession),
@@ -187,11 +199,12 @@ func (s *Service) Revive(name string) error {
 		_ = s.Tmux.KillSession(w.TmuxSession)
 		return fmt.Errorf("open iterm tab: %w", err)
 	}
+	w.HarnessPane = 1
 	w.ITermTab = &workflow.ITermTab{WindowID: tab.WindowID, TabID: tab.TabID}
 	return s.Store.SaveWorkflow(w)
 }
 
-// RestartAll restarts pane 0 (the harness process) in every live workflow,
+// RestartAll restarts the harness pane in every live workflow,
 // preserving the tmux session and all other panes. Dormant workflows are
 // skipped — they will pick up the new backend on next revive.
 // Restarts run in parallel; all errors are collected and joined.
@@ -228,7 +241,7 @@ func (s *Service) RestartAll() (restarted int, err error) {
 			env := map[string]string{"ARTETA_WORKFLOW": w.Name}
 			results <- result{
 				name: w.Name,
-				err:  s.Tmux.RespawnPane(w.TmuxSession, 0, harnessCmd, env),
+				err:  s.Tmux.RespawnPane(w.TmuxSession, w.HarnessPane, harnessCmd, env),
 			}
 		}(w)
 	}
@@ -245,6 +258,59 @@ func (s *Service) RestartAll() (restarted int, err error) {
 		}
 	}
 	return restarted, errors.Join(errs...)
+}
+
+func (s *Service) artetaBin() string {
+	if p, err := exec.LookPath("arteta"); err == nil {
+		return p
+	}
+	return "arteta"
+}
+
+// addSidebar adds a sidebar pane to the left of the workflow's tmux session
+// and registers the toggle keybinding.
+func (s *Service) addSidebar(sessionName string, env map[string]string) error {
+	bin := s.artetaBin()
+	if err := tmux.AddSidebar(s.Tmux, sessionName, bin+" sidebar", env); err != nil {
+		return err
+	}
+	_ = s.Tmux.BindKey("b", bin+" sidebar-toggle")
+	return nil
+}
+
+// SidebarToggle hides or shows the sidebar pane for the given workflow.
+// When hiding, the sidebar pane (index 0) is killed. When showing, a new
+// sidebar pane is created on the left of the harness pane.
+func (s *Service) SidebarToggle(name string) (shown bool, err error) {
+	w, err := s.Store.LoadWorkflow(name)
+	if err != nil {
+		return false, err
+	}
+	indices, err := s.Tmux.ListPaneIndices(w.TmuxSession)
+	if err != nil {
+		return false, err
+	}
+	cmds, err := s.Tmux.PaneCommands(w.TmuxSession)
+	if err != nil {
+		return false, err
+	}
+
+	// Find the sidebar: pane whose foreground command basename is "arteta".
+	sidebarIdx := -1
+	for i, idx := range indices {
+		if i < len(cmds) && filepath.Base(cmds[i]) == "arteta" {
+			sidebarIdx = idx
+			break
+		}
+	}
+
+	if sidebarIdx >= 0 {
+		return false, s.Tmux.KillPane(w.TmuxSession, sidebarIdx)
+	}
+
+	env := map[string]string{"ARTETA_WORKFLOW": name}
+	bin := s.artetaBin()
+	return true, tmux.AddSidebar(s.Tmux, w.TmuxSession, bin+" sidebar", env)
 }
 
 // attachCmd returns the shell command that the new iTerm tab will run to
@@ -313,7 +379,7 @@ func (s *Service) Cycle(dir Direction) (string, workflow.State, error) {
 	for _, w := range r.Live {
 		st, _ := s.Store.LoadStatus(w.Name)
 		screen := workflow.StateUnknown
-		if out, err := s.Tmux.CapturePane(w.TmuxSession, 0); err == nil {
+		if out, err := s.Tmux.CapturePane(w.TmuxSession, w.HarnessPane); err == nil {
 			screen, _ = harness.Get(w.Harness).DetectState(out)
 		}
 		eff := workflow.EffectiveState(st.State(), screen)

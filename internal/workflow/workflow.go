@@ -123,9 +123,10 @@ type Workflow struct {
 	// UnmarshalJSON migrates old files transparently.
 	SessionID string    `json:"session_id,omitempty"`
 	GitBranch string    `json:"git_branch,omitempty"`
-	Layout    Layout    `json:"layout"`
-	ITermTab  *ITermTab `json:"iterm_tab,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	Layout      Layout    `json:"layout"`
+	HarnessPane int       `json:"harness_pane,omitempty"`
+	ITermTab    *ITermTab `json:"iterm_tab,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // UnmarshalJSON handles migration from the old "claude_session_id" field and

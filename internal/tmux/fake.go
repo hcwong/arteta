@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -105,9 +106,14 @@ func (f *Fake) SplitWindow(opts SplitOpts) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.Calls = append(f.Calls, "SplitWindow:"+opts.Target)
-	s, ok := f.sessions[opts.Target]
+	// Target may be "session", "session:window", or "session:window.pane".
+	sessionName := opts.Target
+	if i := strings.IndexByte(sessionName, ':'); i >= 0 {
+		sessionName = sessionName[:i]
+	}
+	s, ok := f.sessions[sessionName]
 	if !ok {
-		return fmt.Errorf("session %q not found", opts.Target)
+		return fmt.Errorf("session %q not found", sessionName)
 	}
 	s.Panes = append(s.Panes, FakePane{
 		Cwd:     opts.Cwd,
@@ -169,6 +175,43 @@ func (f *Fake) RespawnPane(session string, pane int, cmd string, env map[string]
 	s.Panes[pane].Cmd = cmd
 	s.Panes[pane].Current = foregroundOf(cmd)
 	return nil
+}
+
+func (f *Fake) KillPane(session string, pane int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Calls = append(f.Calls, fmt.Sprintf("KillPane:%s:%d", session, pane))
+	s, ok := f.sessions[session]
+	if !ok {
+		return fmt.Errorf("session %q not found", session)
+	}
+	if pane < 0 || pane >= len(s.Panes) {
+		return fmt.Errorf("pane %d out of range (have %d)", pane, len(s.Panes))
+	}
+	s.Panes = append(s.Panes[:pane], s.Panes[pane+1:]...)
+	return nil
+}
+
+func (f *Fake) BindKey(key string, cmd string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Calls = append(f.Calls, "BindKey:"+key)
+	return nil
+}
+
+func (f *Fake) ListPaneIndices(session string) ([]int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Calls = append(f.Calls, "ListPaneIndices:"+session)
+	s, ok := f.sessions[session]
+	if !ok {
+		return nil, fmt.Errorf("session %q not found", session)
+	}
+	indices := make([]int, len(s.Panes))
+	for i := range s.Panes {
+		indices[i] = i
+	}
+	return indices, nil
 }
 
 // SetPaneOutput stores canned capture-pane output for a session. Used in

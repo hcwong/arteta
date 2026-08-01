@@ -1,17 +1,19 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"github.com/charmbracelet/lipgloss"
+	"github.com/hcwong/arteta/internal/ui"
+)
 
-// Earth tone palette — warm ochre, terracotta, sage, parchment, amber.
 const (
-	colorOchre      = lipgloss.Color("#C9A84C") // titles, modal borders
-	colorParchment  = lipgloss.Color("#E8D5B7") // selected text
-	colorTerracotta = lipgloss.Color("#C4663A") // cursor, awaiting input
-	colorAmber      = lipgloss.Color("#D4A017") // running
-	colorSage       = lipgloss.Color("#7A9E5E") // idle
-	colorDust       = lipgloss.Color("#8B7355") // dim text, neutral borders
-	colorAsh        = lipgloss.Color("#6B5C4A") // dormant
-	colorRust       = lipgloss.Color("#B94040") // errors
+	colorOchre      = ui.ColorOchre
+	colorParchment  = ui.ColorParchment
+	colorTerracotta = ui.ColorTerracotta
+	colorAmber      = ui.ColorAmber
+	colorSage       = ui.ColorSage
+	colorDust       = ui.ColorDust
+	colorAsh        = ui.ColorAsh
+	colorRust       = ui.ColorRust
 )
 
 var (

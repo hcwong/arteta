@@ -14,6 +14,7 @@ import (
 	"github.com/hcwong/arteta/internal/hook"
 	"github.com/hcwong/arteta/internal/installer"
 	"github.com/hcwong/arteta/internal/service"
+	"github.com/hcwong/arteta/internal/sidebar"
 	"github.com/hcwong/arteta/internal/store"
 	"github.com/hcwong/arteta/internal/terminal"
 	"github.com/hcwong/arteta/internal/tmux"
@@ -45,6 +46,8 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newRestartCmd())
 	root.AddCommand(newCycleCmd("next", service.DirNext))
 	root.AddCommand(newCycleCmd("prev", service.DirPrev))
+	root.AddCommand(newSidebarCmd())
+	root.AddCommand(newSidebarToggleCmd())
 	return root
 }
 
@@ -73,6 +76,50 @@ func newCycleCmd(use string, dir service.Direction) *cobra.Command {
 				return nil
 			}
 			fmt.Printf("→ %s (%s)\n", name, state)
+			return nil
+		},
+	}
+}
+
+func newSidebarCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:    "sidebar",
+		Short:  "Internal: status sidebar for tmux panes",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			st, svc, err := buildService()
+			if err != nil {
+				return err
+			}
+			currentWorkflow := os.Getenv("ARTETA_WORKFLOW")
+			return sidebar.Run(st, svc, tmux.NewReal(tmux.DefaultSocket), currentWorkflow)
+		},
+	}
+}
+
+func newSidebarToggleCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:    "sidebar-toggle",
+		Short:  "Toggle the sidebar pane in the current workflow's tmux session",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			wfName := os.Getenv("ARTETA_WORKFLOW")
+			if wfName == "" {
+				return fmt.Errorf("ARTETA_WORKFLOW not set")
+			}
+			_, svc, err := buildService()
+			if err != nil {
+				return err
+			}
+			shown, err := svc.SidebarToggle(wfName)
+			if err != nil {
+				return err
+			}
+			if shown {
+				fmt.Println("sidebar shown")
+			} else {
+				fmt.Println("sidebar hidden")
+			}
 			return nil
 		},
 	}

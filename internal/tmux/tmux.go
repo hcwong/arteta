@@ -37,11 +37,14 @@ type NewSessionOpts struct {
 
 // SplitOpts configures a split-window operation.
 type SplitOpts struct {
-	Target string // session or session:window.pane
-	Dir    SplitDir
-	Cwd    string
-	Cmd    string
-	Env    map[string]string
+	Target  string // session or session:window.pane
+	Dir     SplitDir
+	Cwd     string
+	Cmd     string
+	Env     map[string]string
+	Before  bool // -b: place new pane before target (visually left/above)
+	Size    int  // -l N: fixed pane size in columns (vertical) or rows (horizontal)
+	NoFocus bool // -d: don't switch focus to the new pane
 }
 
 // Client is the operations Arteta needs from tmux.
@@ -61,6 +64,12 @@ type Client interface {
 	// RespawnPane kills the current command in pane <pane> and restarts it with
 	// cmd. Equivalent to `tmux respawn-pane -k -t <session>:<pane> cmd`.
 	RespawnPane(session string, pane int, cmd string, env map[string]string) error
+	// KillPane kills a single pane within a session.
+	KillPane(session string, pane int) error
+	// BindKey registers a key binding on the tmux server (root table, no prefix).
+	BindKey(key string, cmd string) error
+	// ListPaneIndices returns the actual pane indices for a session.
+	ListPaneIndices(session string) ([]int, error)
 }
 
 // realClient shells out to `tmux -L <socket>`.
@@ -167,6 +176,15 @@ func (c *realClient) SplitWindow(opts SplitOpts) error {
 		dirFlag = "-v"
 	}
 	args := c.base("split-window", dirFlag, "-t", opts.Target)
+	if opts.Before {
+		args = append(args, "-b")
+	}
+	if opts.NoFocus {
+		args = append(args, "-d")
+	}
+	if opts.Size > 0 {
+		args = append(args, "-l", fmt.Sprintf("%d", opts.Size))
+	}
 	if opts.Cwd != "" {
 		args = append(args, "-c", opts.Cwd)
 	}
@@ -218,4 +236,34 @@ func (c *realClient) RespawnPane(session string, pane int, cmd string, env map[s
 	args = append(args, cmd)
 	_, err := c.run(args...)
 	return err
+}
+
+func (c *realClient) KillPane(session string, pane int) error {
+	target := fmt.Sprintf("%s:0.%d", session, pane)
+	_, err := c.run(c.base("kill-pane", "-t", target)...)
+	return err
+}
+
+func (c *realClient) BindKey(key string, cmd string) error {
+	_, err := c.run(c.base("bind-key", key, "run-shell", cmd)...)
+	return err
+}
+
+func (c *realClient) ListPaneIndices(session string) ([]int, error) {
+	out, err := c.run(c.base("list-panes", "-t", session, "-F", "#{pane_index}")...)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	indices := make([]int, 0, len(lines))
+	for _, l := range lines {
+		if l == "" {
+			continue
+		}
+		var idx int
+		if _, err := fmt.Sscanf(l, "%d", &idx); err == nil {
+			indices = append(indices, idx)
+		}
+	}
+	return indices, nil
 }
